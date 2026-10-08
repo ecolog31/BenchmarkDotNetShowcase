@@ -69,6 +69,41 @@ dotnet run -c Release -f net10.0 -- --filter "*NativeMemoryBenchmarks*" --job sh
 | 03_Memory | `ThreadingDiagnoserBenchmarks` | `[ThreadingDiagnoser]`: Lock Contentions, Completed Work Items |
 | 03_Memory | `ExceptionCostBenchmarks` | `[ExceptionDiagnoser]`: ціна винятку vs `TryParse` |
 | 03_Memory | `NativeMemoryBenchmarks` | `[NativeMemoryProfiler]`: native-алокації та витік (**адміністратор**) |
+| 04_Runtimes | `RuntimeComparisonBenchmarks` | `[SimpleJob(RuntimeMoniker...)]`: .NET 8 / 9 / 10 / NativeAOT 10 в одній таблиці |
+| 04_Runtimes | `JitSettingsBenchmarks` | кілька Job у `ManualConfig`, `WithEnvironmentVariable` (TieredPGO, TieredCompilation, ReadyToRun), `AsBaseline()` |
+| 04_Runtimes | `GcModeBenchmarks` | `WithGcServer` / `WithGcConcurrent` (аналоги `[GcServer]`, `[GcConcurrent]`) |
+| 04_Runtimes | `RunStrategyBenchmarks` | `RunStrategy.Throughput` / `ColdStart` / `Monitoring` |
+| 04_Runtimes | `JobCharacteristicsBenchmarks` | `WithLaunchCount`, `WithWarmupCount`, `WithIterationCount`, `WithInvocationCount`, `WithUnrollFactor`, `WithPlatform` |
+
+## Як читати вивід
+
+| Колонка | Що означає |
+|---|---|
+| **Mean** | середній час однієї операції (після відкидання викидів) |
+| **Error** | половина 99.9% довірчого інтервалу: справжнє середнє з високою ймовірністю в межах Mean ± Error. Великий Error — мало вимірів або шумне середовище |
+| **StdDev** | стандартне відхилення вимірів — наскільки «стрибають» окремі ітерації |
+| **Median** | медіана; з'являється, коли розподіл несиметричний — тоді вона чесніша за Mean |
+| **Ratio** / **RatioSD** | у скільки разів повільніше (>1) або швидше (<1) за baseline, і розкид цього відношення |
+| **Gen0 / Gen1 / Gen2** | кількість збірок GC відповідного покоління **на 1000 операцій** |
+| **Allocated** | байти в керованій купі на одну операцію (`-` = 0 B) |
+| **Alloc Ratio** | Allocated відносно baseline |
+| **Rank** | ранг з урахуванням статистичної значущості: однаковий ранг — різниця не доведена |
+
+Під таблицею BenchmarkDotNet пише попередження: `ZeroMeasurement` (метод не відрізнити від порожнього —
+найчастіше dead code elimination), `MinIterationTime` (ітерація коротша за 100 мс — мало точності),
+`MultimodalDistribution` (кілька «горбів» у розподілі), `Outliers` (скільки вимірів відкинуто).
+
+## Типові помилки
+
+- **Debug-збірка.** `JitOptimizationsValidator` зупиняє запуск: збирати тільки `-c Release`.
+- **Запуск під дебагером** (F5 у Visual Studio) — JIT вимикає оптимізації; запускати з терміналу або Ctrl+F5.
+- **Нестабільне середовище**: ноутбук від батареї, режим енергозбереження, браузер і IDE у фоні, антивірус,
+  що сканує згенеровані exe. Див. `scripts/prepare-windows.ps1` і блок `Environment` у виводі.
+- **Результат не використовується** — JIT викидає код (див. `CommonPitfallsBenchmarks`).
+- **Підготовка даних усередині виміряного методу** — замість `[GlobalSetup]` (див. 06_Setup).
+- **Залежні від `[Params]` дані в конструкторі** — параметри ще не присвоєні (див. `ConstructorVsGlobalSetupBenchmarks`).
+- **`--job short` для класів із власними job-ами** — CLI-job додається, а не замінює їх.
+- **Висновки за короткого запуску.** `--job short` — для швидкої перевірки; для цифр, які показують іншим, — повний запуск.
 
 ## Результати
 
@@ -300,3 +335,65 @@ ZeroMeasurement
 **NativeMemoryBenchmarks** — потребує адміністратора. Без нього валідатор зупиняє запуск:
 `Must be elevated (Admin) to use ETW Kernel Session (required for Hardware Counters and EtwProfiler).`
 Результати — після запуску з терміналу адміністратора (див. розділ «Бенчмарки для адміністратора»).
+
+### 04_Runtimes
+
+Класи цього розділу задають job-и самі, тому запускаються **без** `--job short` (CLI-job додався б четвертим):
+`dotnet run -c Release -f net10.0 -- --filter "*Runtimes*"`. Повний розділ — ~9 хвилин, з них 1–2 — збірка NativeAOT.
+
+**RuntimeComparisonBenchmarks** — словник на .NET 10 на 41% швидший за .NET 8; LINQ найшвидший на .NET 9.
+NativeAOT програє JIT (немає Dynamic PGO), а на LINQ — у 7 разів:
+
+| Method             | Runtime        | Mean       | Ratio | Allocated | Alloc Ratio |
+|------------------- |--------------- |-----------:|------:|----------:|------------:|
+| LinqWhereSelectSum | .NET 10.0      |  11.551 us |  0.79 |     104 B |        1.00 |
+| LinqWhereSelectSum | .NET 8.0       |  14.690 us |  1.00 |     104 B |        1.00 |
+| LinqWhereSelectSum | .NET 9.0       |  10.402 us |  0.71 |     104 B |        1.00 |
+| LinqWhereSelectSum | NativeAOT 10.0 | 104.807 us |  7.14 |     144 B |        1.38 |
+|                    |                |            |       |           |             |
+| DictionaryLookups  | .NET 10.0      |   4.981 us |  0.59 |         - |          NA |
+| DictionaryLookups  | .NET 8.0       |   8.407 us |  1.00 |         - |          NA |
+| DictionaryLookups  | .NET 9.0       |   8.209 us |  0.98 |         - |          NA |
+| DictionaryLookups  | NativeAOT 10.0 |  10.486 us |  1.25 |         - |          NA |
+
+> **NativeAOT і BenchmarkDotNet 0.15.8.** Якщо проєкт бенчмарків має кілька `TargetFrameworks`, NativeAOT-toolchain
+> мовчки публікує звичайний JIT-застосунок і падає з `Executable ... not found` (результат `NA`).
+> Обхід — job з `.WithMsBuildArguments("/p:TargetFramework=net10.0")` (див. `NativeAotConfig` у класі).
+> Також NativeAOT потребує C++ workload у Visual Studio і не любить дуже довгі шляхи (MSB3030).
+
+**JitSettingsBenchmarks** — виклик через інтерфейс: без Dynamic PGO (`TieredPGO=0`) або без tiered compilation
+JIT не девіртуалізує виклик — у 2.4–2.7 раза повільніше. ReadyToRun на стабільну швидкість не впливає:
+
+| Method               | Job          | EnvironmentVariables       | Mean       | Ratio |
+|--------------------- |------------- |--------------------------- |-----------:|------:|
+| SumAreasViaInterface | Default      | Empty                      |   742.2 ns |  1.00 |
+| SumAreasViaInterface | NoPGO        | DOTNET_TieredPGO=0         | 2,030.4 ns |  2.74 |
+| SumAreasViaInterface | NoReadyToRun | DOTNET_ReadyToRun=0        |   687.6 ns |  0.93 |
+| SumAreasViaInterface | NoTiering    | DOTNET_TieredCompilation=0 | 1,777.7 ns |  2.40 |
+
+**GcModeBenchmarks** — 16.8 МБ паралельних алокацій. Server GC робить значно менше збірок (Gen0 598 проти 1057,
+Gen1 87 проти 776 на 1000 операцій) і трохи швидший. Перша версія цього бенчмарка показувала 4 КБ замість 16.8 МБ:
+.NET 10 розмістив `new byte[64]` у стеку (escape analysis), тож довелося «втримувати» масиви — див. 10_DotNet10Features:
+
+| Method              | Job                      | Concurrent | Server | Mean     | Error    | StdDev   | Ratio | RatioSD | Gen0      | Gen1     | Gen2   | Allocated | Alloc Ratio |
+|-------------------- |------------------------- |----------- |------- |---------:|---------:|---------:|------:|--------:|----------:|---------:|-------:|----------:|------------:|
+| ParallelAllocations | Server                   | True       | True   | 801.0 us | 18.44 us | 53.80 us |  0.94 |    0.06 |  597.6563 |  86.9141 |      - |  16.81 MB |        1.00 |
+| ParallelAllocations | Workstation              | True       | False  | 853.4 us | 10.30 us |  9.63 us |  1.00 |    0.02 | 1056.6406 | 776.3672 | 1.9531 |  16.81 MB |        1.00 |
+| ParallelAllocations | WorkstationNonConcurrent | False      | False  | 824.4 us |  8.03 us |  7.12 us |  0.97 |    0.01 | 1056.6406 | 794.9219 | 1.9531 |  16.81 MB |        1.00 |
+
+**RunStrategyBenchmarks** — серіалізація System.Text.Json: стабільний виклик 358 ns, а холодний (новий процес) — ~38 ms,
+у 100 000 разів більше. У Monitoring видно те саме: медіана 20.6 µs, але Max 35 ms — перша ітерація:
+
+| Method          | Job        | IterationCount | LaunchCount | RunStrategy | UnrollFactor | Mean            | Error            | StdDev          | Median          | Min             | Max             |
+|---------------- |----------- |--------------- |------------ |------------ |------------- |----------------:|-----------------:|----------------:|----------------:|----------------:|----------------:|
+| SerializeToJson | ColdStart  | 1              | 5           | ColdStart   | 1            | 38,196,580.0 ns | 14,256,109.79 ns | 3,702,266.45 ns | 39,047,300.0 ns | 32,018,100.0 ns | 41,537,300.0 ns |
+| SerializeToJson | Monitoring | 20             | Default     | Monitoring  | 1            |  1,769,630.0 ns |  6,786,816.37 ns | 7,815,707.82 ns |     20,650.0 ns |      8,800.0 ns | 34,974,800.0 ns |
+| SerializeToJson | Throughput | Default        | Default     | Throughput  | 16           |        358.3 ns |          3.10 ns |         2.59 ns |        357.7 ns |        355.0 ns |        365.1 ns |
+
+**JobCharacteristicsBenchmarks** — той самий код: «Quick» (3 ітерації) дає Error 28 µs при Mean 9.5 µs,
+«Precise» (2 процеси × 30 ітерацій) — 0.14 µs:
+
+| Method   | Job     | InvocationCount | IterationCount | LaunchCount | UnrollFactor | WarmupCount | Mean     | Error      | StdDev    | Ratio | RatioSD |
+|--------- |-------- |---------------- |--------------- |------------ |------------- |------------ |---------:|-----------:|----------:|------:|--------:|
+| SortCopy | Precise | 16000           | 30             | 2           | 4            | 10          | 8.030 us |  0.1413 us | 0.2980 us |  0.85 |    0.11 |
+| SortCopy | Quick   | 1000            | 3              | 1           | 1            | 1           | 9.547 us | 28.0563 us | 1.5379 us |  1.02 |    0.19 |

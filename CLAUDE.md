@@ -28,7 +28,9 @@
 
 ## Корисні команди
 - Запускати з папки `src/Showcase.Benchmarks`; `-f net10.0` обов'язковий (проєкт multi-target)
-- Простори імен розділів без цифр: `Showcase.Benchmarks.Basics`, `Showcase.Benchmarks.Memory` тощо (папки лишаються `01_Basics`)
+- Простори імен розділів без цифр: `Showcase.Benchmarks.Basics`, `Showcase.Benchmarks.Memory` тощо (папки лишаються `01_Basics`); для `Config/` — `Showcase.Benchmarks.Configuration` (namespace `Config` перекрив би атрибут `[Config]`), для `10_DotNet10Features` — `Showcase.Benchmarks.DotNet10`
+- `--job short` з CLI ДОДАЄ job до job-ів класу, а не замінює їх: класи з власними job-ами (04_Runtimes, 10_DotNet10Features, NuGetVersions, ColdStart, JobAttributes) запускати без `--job`
+- NativeAOT-job у BenchmarkDotNet 0.15.8 з multi-target проєктом потребує `.WithMsBuildArguments("/p:TargetFramework=net10.0")` (див. `RuntimeComparisonBenchmarks`)
 - Список бенчмарків: `dotnet run -c Release -f net10.0 -- --list flat`
 - Усі бенчмарки розділу: `dotnet run -c Release -f net10.0 -- --filter "*Memory*"`
 - Результати зберігаються в `BenchmarkDotNet.Artifacts/` (не комітити; додати в `.gitignore`)
