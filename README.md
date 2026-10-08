@@ -110,6 +110,15 @@ dotnet run -c Release -f net10.0 -- --filter "*NativeMemoryBenchmarks*" "*Hardwa
 | 08_Advanced | `GenericTypeArgumentsBenchmarks<T>` | `[GenericTypeArguments]` — int / Guid / string |
 | 08_Advanced | `StaticMethodsBenchmarks` | static-методи: валідатор їх забороняє; instance-обгортки над static-функціями |
 | 08_Advanced | `ColdStartProcessBenchmarks` | зовнішній процес: холодний старт JIT vs ReadyToRun vs NativeAOT (`src/Showcase.ColdStartApp`) |
+| 09_RealWorld | `SerializationBenchmarks` | System.Text.Json (рефлексія / source generator) vs Newtonsoft.Json vs MessagePack |
+| 09_RealWorld | `DictionaryKindsBenchmarks` | `Dictionary` vs `FrozenDictionary` vs `ImmutableDictionary` |
+| 09_RealWorld | `HashSetVsListBenchmarks` | `HashSet.Contains` vs `List.Contains` на 8 і 10 000 елементах |
+| 09_RealWorld | `StringSplitBenchmarks` | `string.Split` vs `ReadOnlySpan<char>` |
+| 09_RealWorld | `RegexModesBenchmarks` | Regex: interpreted vs `Compiled` vs `[GeneratedRegex]` |
+| 09_RealWorld | `HashingBenchmarks` | MD5 / SHA256 vs XxHash64 / XxHash3 (`System.IO.Hashing`) |
+| 09_RealWorld | `LoggingBenchmarks` | `[LoggerMessage]` source generator vs інтерполяція vs шаблон |
+| 09_RealWorld | `DataAccessBenchmarks` | ADO.NET vs Dapper vs EF Core (tracking / no-tracking), SQLite in-memory |
+| 09_RealWorld | `HttpClientReuseBenchmarks` | новий `HttpClient` на запит vs спільний (локальний `HttpListener`) |
 
 ## Як читати вивід
 
@@ -714,3 +723,107 @@ Showcase
 | Showcase.Benchmarks.Advanced | StaticMethodsBenchmarks | Iterative      | .NET 8.0  | .NET 8.0  |  11.413 ns |  1.513 ns | 0.0829 ns |  1.00 |    0.01 |         - |          NA |
 
 Порівняння результатів **між запусками / комітами** — `scripts/compare-results.ps1` (JSON-експорт двох запусків, поріг у %).
+
+### 09_RealWorld
+
+Залежності розділу: MessagePack, System.IO.Hashing, Dapper, Microsoft.Extensions.Logging, Microsoft.EntityFrameworkCore.Sqlite
+(EF Core 10 — лише для `net10.0`, для `net8.0`/`net9.0` — EF Core 9: пакет EF Core 10 не підтримує старіші TFM).
+
+**SerializationBenchmarks** — MessagePack найшвидший і найкомпактніший; source generator STJ дає −34% на серіалізації;
+Newtonsoft у 1.5–2 рази повільніший і алокує в 2–3.7 раза більше:
+
+| Method                   | Categories  | Mean     | Error     | StdDev    | Ratio | RatioSD | Gen0   | Gen1   | Allocated | Alloc Ratio |
+|------------------------- |------------ |---------:|----------:|----------:|------:|--------:|-------:|-------:|----------:|------------:|
+| StjReflectionDeserialize | Deserialize | 4.796 us | 0.9360 us | 0.0513 us |  1.00 |    0.01 | 0.1755 |      - |    2968 B |        1.00 |
+| StjSourceGenDeserialize  | Deserialize | 4.435 us | 1.0814 us | 0.0593 us |  0.92 |    0.01 | 0.1755 |      - |    2968 B |        1.00 |
+| NewtonsoftDeserialize    | Deserialize | 7.412 us | 0.3223 us | 0.0177 us |  1.55 |    0.01 | 0.3662 |      - |    6200 B |        2.09 |
+| MessagePackDeserialize   | Deserialize | 2.517 us | 1.0300 us | 0.0565 us |  0.52 |    0.01 | 0.1221 |      - |    2104 B |        0.71 |
+|                          |             |          |           |           |       |         |        |        |           |             |
+| StjReflectionSerialize   | Serialize   | 2.517 us | 0.3488 us | 0.0191 us |  1.00 |    0.01 | 0.1488 |      - |    2544 B |        1.00 |
+| StjSourceGenSerialize    | Serialize   | 1.664 us | 0.1589 us | 0.0087 us |  0.66 |    0.01 | 0.1316 |      - |    2232 B |        0.88 |
+| NewtonsoftSerialize      | Serialize   | 5.128 us | 1.0907 us | 0.0598 us |  2.04 |    0.02 | 0.5569 | 0.0076 |    9408 B |        3.70 |
+| MessagePackSerialize     | Serialize   | 1.362 us | 0.7429 us | 0.0407 us |  0.54 |    0.01 | 0.0515 |      - |     888 B |        0.35 |
+
+**DictionaryKindsBenchmarks** — тут FrozenDictionary виграє (на відміну від `TargetedSetupBenchmarks` з короткими ключами «key-N»):
+
+| Method                    | Count | Mean         | Error        | StdDev     | Ratio | RatioSD |
+|-------------------------- |------ |-------------:|-------------:|-----------:|------:|--------:|
+| DictionaryLookup          | 10    |     97.99 ns |    35.451 ns |   1.943 ns |  1.00 |    0.02 |
+| FrozenDictionaryLookup    | 10    |     48.23 ns |     4.858 ns |   0.266 ns |  0.49 |    0.01 |
+| ImmutableDictionaryLookup | 10    |    147.24 ns |    11.935 ns |   0.654 ns |  1.50 |    0.03 |
+|                           |       |              |              |            |       |         |
+| DictionaryLookup          | 1000  | 11,443.17 ns | 4,142.931 ns | 227.088 ns |  1.00 |    0.02 |
+| FrozenDictionaryLookup    | 1000  |  8,019.11 ns |   698.938 ns |  38.311 ns |  0.70 |    0.01 |
+| ImmutableDictionaryLookup | 1000  | 22,750.39 ns | 2,227.957 ns | 122.122 ns |  1.99 |    0.04 |
+
+**HashSetVsListBenchmarks** — на 8 елементах різниці майже немає, на 10 000 HashSet у 240 разів швидший:
+
+| Method          | Count | Mean        | Error       | StdDev    | Ratio | RatioSD |
+|---------------- |------ |------------:|------------:|----------:|------:|--------:|
+| ListContains    | 8     |    188.3 ns |    45.73 ns |   2.51 ns |  1.00 |    0.02 |
+| HashSetContains | 8     |    169.0 ns |    21.15 ns |   1.16 ns |  0.90 |    0.01 |
+|                 |       |             |             |           |       |         |
+| ListContains    | 10000 | 40,569.1 ns | 4,642.19 ns | 254.45 ns | 1.000 |    0.01 |
+| HashSetContains | 10000 |    167.7 ns |    18.25 ns |   1.00 ns | 0.004 |    0.00 |
+
+**StringSplitBenchmarks**:
+
+| Method      | Mean     | Error     | StdDev   | Ratio | RatioSD | Gen0   | Allocated | Alloc Ratio |
+|------------ |---------:|----------:|---------:|------:|--------:|-------:|----------:|------------:|
+| StringSplit | 703.7 ns | 210.98 ns | 11.56 ns |  1.00 |    0.02 | 0.1202 |    2016 B |        1.00 |
+| SpanIndexOf | 401.5 ns |  69.22 ns |  3.79 ns |  0.57 |    0.01 |      - |         - |        0.00 |
+
+**RegexModesBenchmarks** — `Compiled` і `[GeneratedRegex]` майже однакові й у ~2.7 раза швидші за інтерпретатор:
+
+| Method          | Mean     | Error    | StdDev   | Ratio |
+|---------------- |---------:|---------:|---------:|------:|
+| Interpreted     | 45.09 us | 5.509 us | 0.302 us |  1.00 |
+| Compiled        | 17.21 us | 2.368 us | 0.130 us |  0.38 |
+| SourceGenerated | 15.95 us | 1.778 us | 0.097 us |  0.35 |
+
+**HashingBenchmarks** — на Zen 3 є SHA-розширення, тому SHA256 у 3 рази швидший за MD5; XxHash3 — ~49 ГБ/с на 1 МБ:
+
+| Method       | Size    | Mean            | Error         | StdDev       | Ratio | RatioSD | Gen0   | Allocated | Alloc Ratio |
+|------------- |-------- |----------------:|--------------:|-------------:|------:|--------:|-------:|----------:|------------:|
+| Sha256       | 1024    |       644.88 ns |     45.301 ns |     2.483 ns |  1.00 |    0.00 | 0.0029 |      56 B |        1.00 |
+| Md5          | 1024    |     1,784.88 ns |    286.013 ns |    15.677 ns |  2.77 |    0.02 | 0.0019 |      40 B |        0.71 |
+| XxHash64Hash | 1024    |        69.92 ns |      7.709 ns |     0.423 ns |  0.11 |    0.00 |      - |         - |        0.00 |
+| XxHash3Hash  | 1024    |        30.92 ns |     20.404 ns |     1.118 ns |  0.05 |    0.00 |      - |         - |        0.00 |
+|              |         |                 |               |              |       |         |        |           |             |
+| Sha256       | 1048576 |   478,002.39 ns |  7,316.194 ns |   401.025 ns |  1.00 |    0.00 |      - |      56 B |        1.00 |
+| Md5          | 1048576 | 1,577,464.19 ns | 45,481.392 ns | 2,492.989 ns |  3.30 |    0.01 |      - |      40 B |        0.71 |
+| XxHash64Hash | 1048576 |    60,098.05 ns |  3,195.240 ns |   175.142 ns |  0.13 |    0.00 |      - |         - |        0.00 |
+| XxHash3Hash  | 1048576 |    21,445.78 ns |  3,810.504 ns |   208.867 ns |  0.04 |    0.00 |      - |         - |        0.00 |
+
+**LoggingBenchmarks** — головне — вимкнений рівень: `[LoggerMessage]` коштує 0.47 ns і 0 B, а інтерполяція — 76 ns і 88 B
+навіть коли нічого не логується. При увімкненому рівні інтерполяція тут найшвидша — рядок однаково форматується:
+
+| Method                   | Categories | Mean        | Error      | StdDev    | Ratio | RatioSD | Gen0   | Allocated | Alloc Ratio |
+|------------------------- |----------- |------------:|-----------:|----------:|------:|--------:|-------:|----------:|------------:|
+| Disabled_Interpolation   | Disabled   |  76.5164 ns | 15.4297 ns | 0.8458 ns | 1.000 |    0.01 | 0.0052 |      88 B |        1.00 |
+| Disabled_MessageTemplate | Disabled   |  24.0896 ns |  3.3451 ns | 0.1834 ns | 0.315 |    0.00 | 0.0052 |      88 B |        1.00 |
+| Disabled_LoggerMessage   | Disabled   |   0.4664 ns |  0.0577 ns | 0.0032 ns | 0.006 |    0.00 |      - |         - |        0.00 |
+|                          |            |             |            |           |       |         |        |           |             |
+| Enabled_Interpolation    | Enabled    |  78.0910 ns |  4.6148 ns | 0.2530 ns |  1.00 |    0.00 | 0.0052 |      88 B |        1.00 |
+| Enabled_MessageTemplate  | Enabled    | 146.3543 ns |  0.5979 ns | 0.0328 ns |  1.87 |    0.01 | 0.0105 |     176 B |        2.00 |
+| Enabled_LoggerMessage    | Enabled    |  93.8847 ns | 56.3589 ns | 3.0892 ns |  1.20 |    0.03 | 0.0052 |      88 B |        1.00 |
+
+**DataAccessBenchmarks** — вибірка 100 рядків: Dapper +29%, EF Core з трекінгом — 2.4× і 7× алокацій;
+`AsNoTracking` скорочує розрив до 1.54×. Пошук за ключем: Dapper 4.9 µs проти 19.3 µs в EF Core:
+
+| Method               | Mean       | Error       | StdDev    | Ratio | RatioSD | Gen0   | Allocated | Alloc Ratio |
+|--------------------- |-----------:|------------:|----------:|------:|--------:|-------:|----------:|------------:|
+| AdoNetQuery          |  62.838 us |   1.7733 us | 0.0972 us |  1.00 |    0.00 | 0.6104 |  11.45 KB |        1.00 |
+| DapperQuery          |  81.100 us |   9.2141 us | 0.5051 us |  1.29 |    0.01 | 1.0986 |   19.5 KB |        1.70 |
+| EfCoreTracking       | 150.514 us | 117.3255 us | 6.4310 us |  2.40 |    0.09 | 4.8828 |  80.75 KB |        7.06 |
+| EfCoreNoTracking     |  96.502 us |  32.9268 us | 1.8048 us |  1.54 |    0.02 | 2.1973 |  35.94 KB |        3.14 |
+| DapperById           |   4.936 us |   0.1370 us | 0.0075 us |  0.08 |    0.00 | 0.0992 |    1.7 KB |        0.15 |
+| EfCoreFindNoTracking |  19.330 us |  12.6836 us | 0.6952 us |  0.31 |    0.01 | 0.3662 |   6.71 KB |        0.59 |
+
+**HttpClientReuseBenchmarks** — спільний `HttpClient` у 3.6 раза швидший і алокує вчетверо менше
+(новий клієнт = нове TCP-з'єднання):
+
+| Method              | Mean     | Error    | StdDev   | Ratio | RatioSD | Allocated | Alloc Ratio |
+|-------------------- |---------:|---------:|---------:|------:|--------:|----------:|------------:|
+| NewClientPerRequest | 503.4 us | 512.2 us | 28.08 us |  1.00 |    0.07 |  23.45 KB |        1.00 |
+| SharedClient        | 138.1 us | 254.9 us | 13.97 us |  0.27 |    0.03 |   5.71 KB |        0.24 |
