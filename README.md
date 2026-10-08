@@ -408,9 +408,25 @@ ZeroMeasurement
 | TryParse       | 12x45 |     8.164 ns |  0.9748 ns | 0.0534 ns |   1.00 |    0.01 |      - |          - |         - |          NA |
 | ParseWithCatch | 12x45 | 1,771.886 ns | 77.0907 ns | 4.2256 ns | 217.04 |    1.31 | 0.0286 |     1.0000 |     480 B |          NA |
 
-**NativeMemoryBenchmarks** — потребує адміністратора. Без нього валідатор зупиняє запуск:
-`Must be elevated (Admin) to use ETW Kernel Session (required for Hardware Counters and EtwProfiler).`
-Результати — після запуску з терміналу адміністратора (див. розділ «Бенчмарки для адміністратора»).
+**NativeMemoryBenchmarks** — запуск від адміністратора (без прав валідатор зупиняє запуск:
+`Must be elevated (Admin) to use ETW Kernel Session`). Колонки `Allocated native memory` і `Native memory leak` бачать те,
+чого не бачить `[MemoryDiagnoser]` (Allocated = 0 у всіх рядках). Витік 1 КБ на операцію знайдено точно:
+
+| Method              | Mean      | Error      | StdDev    | Ratio | RatioSD | Allocated native memory | Native memory leak | Allocated | Alloc Ratio |
+|-------------------- |----------:|-----------:|----------:|------:|--------:|------------------------:|-------------------:|----------:|------------:|
+| NativeAllocAndFree  |  44.07 ns | 103.786 ns |  5.689 ns |  1.01 |    0.17 |                 1,024 B |                  - |         - |          NA |
+| NativeAllocLeak     | 224.90 ns | 382.784 ns | 20.982 ns |  5.17 |    0.75 |                 1,024 B |            1,024 B |         - |          NA |
+| AllocHGlobalAndFree |  42.93 ns |   1.053 ns |  0.058 ns |  0.99 |    0.12 |                 1,024 B |                  - |         - |          NA |
+
+```
+NativeMemoryBenchmarks.NativeAllocLeak: ShortRun(InvocationCount=1000, ...)
+Native memory allocated per single operation: 1024B
+Count of allocated object: 1
+Native memory leak per single operation: 1024B
+Count of not deallocated object: 1
+```
+
+`NativeAllocLeak` ще й у 5 разів повільніший — імовірно, тому що без `Free` аллокатор щоразу шукає новий блок, а не повторно віддає щойно звільнений.
 
 ### 04_Runtimes
 
@@ -477,7 +493,64 @@ Gen1 87 проти 776 на 1000 операцій) і трохи швидший.
 ### 05_Diagnosers
 
 `[DotTraceDiagnoser]` / `[DotMemoryDiagnoser]` не додано: за планом — лише якщо встановлено JetBrains-інструменти (їх немає).
-Класи для адміністратора описано в розділі «Бенчмарки для адміністратора» — їхні результати тут з'являться після запуску.
+Класи з ETW (`HardwareCounters`, `EtwProfiler`, `Inlining`, `TailCall`) запускалися з терміналу адміністратора.
+
+**BranchPredictionHardwareCountersBenchmarks** — однакові дані, однаковий код, відрізняється лише порядок.
+На випадкових даних процесор помиляється в передбаченні переходу в 40 разів частіше — і код удвічі повільніший:
+
+| Method       | Mean     | Error     | StdDev   | Ratio | RatioSD | BranchMispredictions/Op | BranchInstructions/Op |
+|------------- |---------:|----------:|---------:|------:|--------:|------------------------:|----------------------:|
+| SortedData   | 15.82 us |  1.373 us | 0.075 us |  1.00 |    0.01 |                      30 |                78,364 |
+| UnsortedData | 33.69 us | 76.624 us | 4.200 us |  2.13 |    0.23 |                   1,203 |                81,145 |
+
+**CacheMissesHardwareCountersBenchmarks** — матриця 16 МБ: обхід по стовпцях дає у 284 рази більше промахів кешу
+(4 млн проти 14 тис. на операцію) і в 5.4 раза повільніший:
+
+| Method      | Mean      | Error    | StdDev    | Ratio | RatioSD | CacheMisses/Op |
+|------------ |----------:|---------:|----------:|------:|--------:|---------------:|
+| RowMajor    |  3.053 ms | 1.752 ms | 0.0960 ms |  1.00 |    0.04 |         14,232 |
+| ColumnMajor | 16.545 ms | 4.749 ms | 0.2603 ms |  5.42 |    0.17 |      4,043,232 |
+
+Обидва лічильники Windows надала й на AMD Ryzen 5 5600. `[HardwareCounters]` працює через ETW, тому під таблицями теж
+з'являється «Diagnostic Output - EtwProfiler» з `.etl`-файлами.
+
+**EtwProfilerBenchmarks** — звичайна таблиця плюс траса для PerfView / Windows Performance Analyzer:
+`BenchmarkDotNet.Artifacts/Showcase.Benchmarks.Diagnosers.EtwProfilerBenchmarks.ParseAndSerialize-<дата>.etl`.
+Профайлер робить окремий діагностичний прогін (`// Run, Diagnostic` у лозі), тож на час вимірів не впливає:
+
+| Method            | Mean     | Error    | StdDev   |
+|------------------ |---------:|---------:|---------:|
+| ParseAndSerialize | 20.45 us | 3.473 us | 0.190 us |
+
+**InliningDiagnoserBenchmarks** — `AddNoInlining` не вбудовано (`Fail Reason: noinline per IL/cached result`), і 1 000 викликів
+коштують ×4.8. Несподіванка: «великий» `AddLarge` з шістьма `if` **вбудовано** (рядка Fail Reason немає) —
+ліміт розміру IL не перевищено; `CallsLargeMethod` повільніший лише через ділення в кожній ітерації:
+
+| Method                | Mean       | Error     | StdDev  | Ratio | RatioSD |
+|---------------------- |-----------:|----------:|--------:|------:|--------:|
+| CallsInlinedMethod    |   233.8 ns |  20.32 ns | 1.11 ns |  1.00 |    0.01 |
+| CallsNoInliningMethod | 1,132.0 ns |  17.10 ns | 0.94 ns |  4.84 |    0.02 |
+| CallsLargeMethod      | 5,080.2 ns | 170.89 ns | 9.37 ns | 21.73 |    0.10 |
+
+```
+Inliner: Showcase.Benchmarks.Diagnosers.InliningDiagnoserBenchmarks.CallsNoInliningMethod - instance int32  ()
+Inlinee: Showcase.Benchmarks.Diagnosers.InliningDiagnoserBenchmarks.AddNoInlining - int32  (int32,int32)
+Fail Reason: noinline per IL/cached result
+```
+
+**TailCallDiagnoserBenchmarks** — JIT не просто зробив хвостовий виклик, а перетворив рекурсію на цикл
+(`Tail call type: RecursiveLoop`); для нехвостової рекурсії подій немає. Різниця — ×3.4:
+
+| Method           | Mean     | Error     | StdDev   | Ratio | RatioSD |
+|----------------- |---------:|----------:|---------:|------:|--------:|
+| TailRecursive    | 233.2 ns |  73.50 ns |  4.03 ns |  1.00 |    0.02 |
+| NotTailRecursive | 799.1 ns | 189.90 ns | 10.41 ns |  3.43 |    0.06 |
+
+```
+Callee: Showcase.Benchmarks.Diagnosers.TailCallDiagnoserBenchmarks.SumTailRecursive - int64  (int32,int64)
+Tail prefix: False
+Tail call type: RecursiveLoop
+```
 
 **BoundsCheckDisassemblyBenchmarks** — колонка Code Size додається `[DisassemblyDiagnoser]` автоматично:
 

@@ -8,8 +8,9 @@ namespace Showcase.Benchmarks.Diagnosers;
 /// JIT перетворив на хвостові (jmp замість call — без нового кадру стеку), а які ні і чому.
 /// C# не позначає хвостові виклики явно (на відміну від F# з префіксом tail.), але x64 JIT
 /// може зробити «fast tail call» сам, якщо сигнатури сумісні.
-/// Чого очікувати: у лозі — рядки про SumTailRecursive (хвостовий виклик у позиції return) і про
-/// SumNotTail, де після рекурсивного виклику ще є додавання — це не хвостовий виклик.
+/// Результат (виміряно): для SumTailRecursive JIT повідомив «Tail call type: RecursiveLoop» — рекурсію перетворено
+/// на звичайний цикл (і OptimizedTailCall для першого виклику); для SumNotTail подій немає. TailRecursive у 3.4 раза
+/// швидший (233 ns проти 799 ns на 1 000 рівнів) — немає 1 000 кадрів стеку.
 ///
 /// ⚠ Потребує запуску від АДМІНІСТРАТОРА (ETW-сесія):
 ///   dotnet run -c Release -f net10.0 -- --filter "*TailCallDiagnoser*" --job short
