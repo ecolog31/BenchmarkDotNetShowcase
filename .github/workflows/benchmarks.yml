@@ -1,0 +1,49 @@
+# Ручний або щотижневий запуск вибраних бенчмарків на GitHub Actions.
+# Хмарні runner-и — віртуальні машини зі «шумними сусідами»: абсолютні цифри тут ненадійні,
+# годяться лише для грубого виявлення регресій і перевірки, що все збирається й запускається.
+name: benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'BenchmarkDotNet --filter'
+        default: '*Basics*'
+  schedule:
+    - cron: '0 3 * * 1'
+
+jobs:
+  run:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+            10.0.x
+
+      - name: Build
+        run: dotnet build -c Release
+
+      - name: Run benchmarks
+        shell: pwsh
+        working-directory: src/Showcase.Benchmarks
+        run: |
+          $filter = '${{ github.event.inputs.filter }}'
+          if (-not $filter) { $filter = '*Basics*' }
+          dotnet run -c Release -f net10.0 --no-build -- --filter $filter --job short --exporters json github
+
+      - name: Publish Markdown to job summary
+        shell: pwsh
+        run: |
+          Get-ChildItem src/Showcase.Benchmarks/BenchmarkDotNet.Artifacts/results -Filter '*-report-github.md' |
+            ForEach-Object { "### $($_.BaseName)"; Get-Content $_.FullName; '' } |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: src/Showcase.Benchmarks/BenchmarkDotNet.Artifacts/results

@@ -10,7 +10,10 @@
 | `src/Showcase.Benchmarks/` | консольний проєкт з бенчмарками (`BenchmarkSwitcher` + меню) |
 | `src/Showcase.Library/` | бібліотека для коду, який бенчмаркається (зараз порожня: приклади невеликі й живуть у класах бенчмарків) |
 | `src/Showcase.ColdStartApp/` | мініатюрна програма для вимірювання холодного старту (08_Advanced) |
-| `scripts/` | допоміжні скрипти |
+| `scripts/run-benchmarks.ps1` | запуск розділу з правильними параметрами (Release, net10.0), JSON-експорт, попередження про адмін-класи |
+| `scripts/compare-results.ps1` | порівняння двох JSON-запусків (регресії між комітами), код 1 при сповільненні > порогу |
+| `scripts/prepare-windows.ps1` | перевірка/підготовка Windows: схема живлення, батарея, Defender, права адміністратора |
+| `.github/workflows/benchmarks.yml` | GitHub Actions: ручний/щотижневий запуск, Markdown у job summary, артефакти |
 
 ## Вимоги
 
@@ -36,6 +39,26 @@ dotnet run -c Release -f net10.0 -- --filter "*Basics*" --job short
 
 `-f net10.0` обов'язковий: проєкт націлений на кілька фреймворків, і `dotnet run` без нього не стартує.
 Результати зберігаються в `BenchmarkDotNet.Artifacts/` (не комітяться).
+
+Те саме через скрипт (з кореня репозиторію):
+
+```powershell
+./scripts/prepare-windows.ps1                                   # перевірити середовище
+./scripts/run-benchmarks.ps1 -Filter '*Memory*'                  # розділ з --job short
+./scripts/run-benchmarks.ps1 -Filter '*Runtimes*' -NoShortJob    # класи з власними job-ами
+./scripts/run-benchmarks.ps1 -Filter '*Basics*' -Exporters json -ArtifactsPath ../../results/base
+./scripts/compare-results.ps1 -Baseline results/base -Current results/head -Threshold 10
+```
+
+### Сценарій живої демонстрації (~10 хвилин)
+
+1. **Baseline / Ratio і пастки:** `--filter "*BaselineRatio*" "*CommonPitfalls*" --job short` — `foreach` швидший за `for`,
+   `ZeroMeasurement` на неправильних методах.
+2. **MemoryDiagnoser:** `--filter "*StringBuilding*" "*ArrayPool*" --job short` — 33 КБ проти 600 B, Gen2 від LOH.
+3. **DisassemblyDiagnoser:** `--filter "*BoundsCheckDisassembly*" --job short` і відкрити `*-asm.md` — чому `for` по полю повільніший.
+4. **.NET 8 vs 10:** `--filter "*StackAllocation*" "*Devirtualization*"` (без `--job`) — 56 B → 0 B, ×12 на `IReadOnlyList`.
+
+Повні результати варто прогнати заздалегідь (без `--job short`) і зберегти `BenchmarkDotNet.Artifacts/results` як запасний варіант.
 
 ## Бенчмарки для адміністратора
 
