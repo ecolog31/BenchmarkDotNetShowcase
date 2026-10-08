@@ -43,8 +43,15 @@ dotnet run -c Release -f net10.0 -- --filter "*Basics*" --job short
 з папки `src/Showcase.Benchmarks`:
 
 ```powershell
-dotnet run -c Release -f net10.0 -- --filter "*NativeMemoryBenchmarks*" --job short
+dotnet run -c Release -f net10.0 -- --filter "*NativeMemoryBenchmarks*" "*HardwareCounters*" "*EtwProfiler*" "*InliningDiagnoser*" "*TailCallDiagnoser*" --job short
 ```
+
+| Клас | Що з'явиться у виводі |
+|---|---|
+| `NativeMemoryBenchmarks` | колонки Allocated native memory / Native memory leak |
+| `BranchPredictionHardwareCountersBenchmarks`, `CacheMissesHardwareCountersBenchmarks` | колонки BranchMispredictions/Op, BranchInstructions/Op, CacheMisses/Op (на AMD Windows може не надати частину лічильників) |
+| `EtwProfilerBenchmarks` | файл `*.etl` у `BenchmarkDotNet.Artifacts` для PerfView / Windows Performance Analyzer |
+| `InliningDiagnoserBenchmarks`, `TailCallDiagnoserBenchmarks` | текстовий звіт JIT про інлайнінг / хвостові виклики під таблицею |
 
 ## Фічі → класи
 
@@ -74,6 +81,14 @@ dotnet run -c Release -f net10.0 -- --filter "*NativeMemoryBenchmarks*" --job sh
 | 04_Runtimes | `GcModeBenchmarks` | `WithGcServer` / `WithGcConcurrent` (аналоги `[GcServer]`, `[GcConcurrent]`) |
 | 04_Runtimes | `RunStrategyBenchmarks` | `RunStrategy.Throughput` / `ColdStart` / `Monitoring` |
 | 04_Runtimes | `JobCharacteristicsBenchmarks` | `WithLaunchCount`, `WithWarmupCount`, `WithIterationCount`, `WithInvocationCount`, `WithUnrollFactor`, `WithPlatform` |
+| 05_Diagnosers | `BoundsCheckDisassemblyBenchmarks` | `[DisassemblyDiagnoser]` (Intel-синтаксис, C#-код поруч, експорт GitHub/HTML/diff): bounds-check elimination і loop cloning |
+| 05_Diagnosers | `SimdDisassemblyBenchmarks` | скалярний цикл vs `Vector<T>` vs `Vector256` + asm з ymm-інструкціями |
+| 05_Diagnosers | `EventPipeProfilerBenchmarks` | `[EventPipeProfiler(CpuSampling)]` → `*.speedscope.json` (без адміністратора) |
+| 05_Diagnosers | `BranchPredictionHardwareCountersBenchmarks` | `[HardwareCounters]`: BranchMispredictions, відсортовані vs випадкові дані (**адміністратор**) |
+| 05_Diagnosers | `CacheMissesHardwareCountersBenchmarks` | `[HardwareCounters]`: CacheMisses, обхід матриці по рядках vs по стовпцях (**адміністратор**) |
+| 05_Diagnosers | `EtwProfilerBenchmarks` | `[EtwProfiler]` → `*.etl` для PerfView / WPA (**адміністратор**) |
+| 05_Diagnosers | `InliningDiagnoserBenchmarks` | `[InliningDiagnoser]`: рішення JIT про інлайнінг (**адміністратор**) |
+| 05_Diagnosers | `TailCallDiagnoserBenchmarks` | `[TailCallDiagnoser]`: хвостові виклики x64 JIT (**адміністратор**) |
 
 ## Як читати вивід
 
@@ -397,3 +412,41 @@ Gen1 87 проти 776 на 1000 операцій) і трохи швидший.
 |--------- |-------- |---------------- |--------------- |------------ |------------- |------------ |---------:|-----------:|----------:|------:|--------:|
 | SortCopy | Precise | 16000           | 30             | 2           | 4            | 10          | 8.030 us |  0.1413 us | 0.2980 us |  0.85 |    0.11 |
 | SortCopy | Quick   | 1000            | 3              | 1           | 1            | 1           | 9.547 us | 28.0563 us | 1.5379 us |  1.02 |    0.19 |
+
+### 05_Diagnosers
+
+`[DotTraceDiagnoser]` / `[DotMemoryDiagnoser]` не додано: за планом — лише якщо встановлено JetBrains-інструменти (їх немає).
+Класи для адміністратора описано в розділі «Бенчмарки для адміністратора» — їхні результати тут з'являться після запуску.
+
+**BoundsCheckDisassemblyBenchmarks** — колонка Code Size додається `[DisassemblyDiagnoser]` автоматично:
+
+| Method                    | Mean     | Error     | StdDev    | Ratio | Code Size |
+|-------------------------- |---------:|----------:|----------:|------:|----------:|
+| LocalArrayToLength        | 2.584 us | 0.2491 us | 0.0137 us |  1.00 |      30 B |
+| LocalArrayToSeparateCount | 2.607 us | 0.4037 us | 0.0221 us |  1.01 |      88 B |
+| FieldArray                | 4.582 us | 0.1498 us | 0.0082 us |  1.77 |      64 B |
+
+Що видно в згенерованому `*-asm.md` (.NET 10.0.12):
+- `LocalArrayToLength` — у циклі лише `add ecx,[rax]` / `add rax,4`, жодної перевірки меж;
+- `LocalArrayToSeparateCount` — **loop cloning**: перед циклом одне порівняння `cmp r10d,ecx` (довжина vs count),
+  далі та сама «швидка» копія циклу; повільна копія з `CORINFO_HELP_RNGCHKFAIL` — про запас. Тому швидкість однакова,
+  а коду втричі більше;
+- `FieldArray` — у кожній ітерації `cmp edx,[r8+8]` / `jae` (перевірка меж) і `cmp [rcx+8],edx` (довжина перечитується
+  з поля) — у 1.77 раза повільніше. Це пояснює, чому `for` по полю програв `foreach` у 01_Basics.
+
+**SimdDisassemblyBenchmarks** — Ryzen 5 5600: `Vector<float>.Count = 8, Vector256.IsHardwareAccelerated = True,
+Vector512.IsHardwareAccelerated = False` (AVX2 без AVX-512). Векторні версії у 8 разів швидші — ширина вектора 8 float:
+
+| Method            | Mean       | Error     | StdDev   | Ratio | Code Size |
+|------------------ |-----------:|----------:|---------:|------:|----------:|
+| Scalar            | 2,759.2 ns | 220.75 ns | 12.10 ns |  1.00 |      32 B |
+| VectorT           |   350.8 ns |   7.55 ns |  0.41 ns |  0.13 |     195 B |
+| Vector256Explicit |   328.7 ns |  54.46 ns |  2.99 ns |  0.12 |     137 B |
+
+**EventPipeProfilerBenchmarks** — таблиця звичайна, головне — файл
+`BenchmarkDotNet.Artifacts/Showcase.Benchmarks.Diagnosers.EventPipeProfilerBenchmarks.CountPrimesThenSort-<дата>.speedscope.json`,
+який відкривається на https://www.speedscope.app як flame graph:
+
+| Method              | Mean     | Error     | StdDev    |
+|-------------------- |---------:|----------:|----------:|
+| CountPrimesThenSort | 2.255 ms | 0.1458 ms | 0.0080 ms |
