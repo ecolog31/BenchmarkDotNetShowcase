@@ -8,7 +8,8 @@
 | Шлях | Призначення |
 |---|---|
 | `src/Showcase.Benchmarks/` | консольний проєкт з бенчмарками (`BenchmarkSwitcher` + меню) |
-| `src/Showcase.Library/` | код, який бенчмаркається |
+| `src/Showcase.Library/` | бібліотека для коду, який бенчмаркається (зараз порожня: приклади невеликі й живуть у класах бенчмарків) |
+| `src/Showcase.ColdStartApp/` | мініатюрна програма для вимірювання холодного старту (08_Advanced) |
 | `scripts/` | допоміжні скрипти |
 
 ## Вимоги
@@ -105,6 +106,10 @@ dotnet run -c Release -f net10.0 -- --filter "*NativeMemoryBenchmarks*" "*Hardwa
 | 07_Async | `TaskVsValueTaskBenchmarks` | `Task<T>` vs `ValueTask<T>` vs `Task` при синхронному завершенні |
 | 07_Async | `AsyncOverheadBenchmarks` | `async/await` vs пряме повернення `Task`, `ConfigureAwait(false)` |
 | 07_Async | `ParallelismBenchmarks` | `Parallel.For` vs PLINQ vs `Task.WhenAll` + `[ThreadingDiagnoser]` |
+| 08_Advanced | `NuGetVersionsBenchmarks` | дві версії NuGet-пакета в одному запуску через `WithMsBuildArguments` (Newtonsoft.Json 12.0.3 vs 13.0.3) |
+| 08_Advanced | `GenericTypeArgumentsBenchmarks<T>` | `[GenericTypeArguments]` — int / Guid / string |
+| 08_Advanced | `StaticMethodsBenchmarks` | static-методи: валідатор їх забороняє; instance-обгортки над static-функціями |
+| 08_Advanced | `ColdStartProcessBenchmarks` | зовнішній процес: холодний старт JIT vs ReadyToRun vs NativeAOT (`src/Showcase.ColdStartApp`) |
 
 ## Як читати вивід
 
@@ -622,3 +627,90 @@ Outliers
 | ParallelFor |  2.269 ms | 0.1338 ms | 0.0073 ms |  0.23 |              11.9609 |           0.0039 |    4106 B |          NA |
 | Plinq       |  1.964 ms | 0.0557 ms | 0.0031 ms |  0.20 |              11.0000 |                - |    7220 B |          NA |
 | TaskWhenAll |  1.797 ms | 0.0561 ms | 0.0031 ms |  0.18 |              64.0000 |           0.0117 |   12536 B |          NA |
+
+### 08_Advanced
+
+**NuGetVersionsBenchmarks** — `WithNuGet` / `[NuGetReference]` у BenchmarkDotNet 0.14+ більше немає. Версія пакета —
+MSBuild-властивість у `Showcase.Benchmarks.csproj` (`Version="$(NewtonsoftJsonVersion)"`), а кожен job передає свою через
+`WithMsBuildArguments`. У лозі видно, що завантажено різні збірки: `Newtonsoft.Json loaded: 12.0.0.0` і `13.0.0.0`.
+Між цими версіями різниці у швидкості немає:
+
+| Method      | Job               | Arguments                       | Mean     | Error    | StdDev  | Ratio | Gen0   | Gen1   | Allocated | Alloc Ratio |
+|------------ |------------------ |-------------------------------- |---------:|---------:|--------:|------:|-------:|-------:|----------:|------------:|
+| Serialize   | Newtonsoft 12.0.3 | /p:NewtonsoftJsonVersion=12.0.3 | 482.2 ns | 85.99 ns | 4.71 ns |  1.00 | 0.1049 |      - |   1.72 KB |        1.00 |
+| Serialize   | Newtonsoft 13.0.3 | /p:NewtonsoftJsonVersion=13.0.3 | 479.2 ns | 63.55 ns | 3.48 ns |  0.99 | 0.1049 |      - |   1.72 KB |        1.00 |
+|             |                   |                                 |          |          |         |       |        |        |           |             |
+| Deserialize | Newtonsoft 12.0.3 | /p:NewtonsoftJsonVersion=12.0.3 | 706.3 ns | 78.70 ns | 4.31 ns |  1.00 | 0.1831 | 0.0010 |      3 KB |        1.00 |
+| Deserialize | Newtonsoft 13.0.3 | /p:NewtonsoftJsonVersion=13.0.3 | 727.8 ns | 63.94 ns | 3.51 ns |  1.03 | 0.1831 | 0.0010 |      3 KB |        1.00 |
+
+**GenericTypeArgumentsBenchmarks&lt;T&gt;** — кожен тип запускається як окремий бенчмарк
+(`GenericTypeArgumentsBenchmarks<Int32>.ContainsMissing` тощо). `List<T>.Contains` для відсутнього елемента з 1 000:
+
+| T      | Mean     | Error    | StdDev   |
+|------- |---------:|---------:|---------:|
+| Int32  |  44.15 ns | 8.818 ns | 0.483 ns |
+| Guid   | 482.1 ns | 3.56 ns  | 0.20 ns  |
+| String | 848.7 ns | 177.6 ns | 9.73 ns  |
+
+**StaticMethodsBenchmarks** — план передбачав static-методи як бенчмарки, але BenchmarkDotNet 0.15.8 їх відхиляє:
+`Benchmarked method 'Recursive' is static. Benchmarks MUST be instance methods, static methods are not supported.`
+Тому бенчмарки — instance-обгортки. Формула Біне, попри O(1), повільніша за цикл:
+
+| Method       | Mean           | Error         | StdDev        | Ratio |
+|------------- |---------------:|--------------:|--------------:|------:|
+| Recursive    | 165,564.575 ns | 27,280.623 ns | 1,495.3430 ns | 1.000 |
+| Iterative    |       6.771 ns |      3.134 ns |     0.1718 ns | 0.000 |
+| BinetFormula |      15.671 ns |     12.349 ns |     0.6769 ns | 0.000 |
+
+**ColdStartProcessBenchmarks** — повний час «запустити процес і дочекатися виходу» (`RunStrategy.Monitoring`).
+NativeAOT стартує втричі швидше; ReadyToRun для крихітної програми не допомагає — фреймворк і так попередньо скомпільований:
+
+| Method     | Mean     | Error    | StdDev   | Ratio | RatioSD |
+|----------- |---------:|---------:|---------:|------:|--------:|
+| Jit        | 33.26 ms | 1.072 ms | 1.003 ms |  1.00 |    0.04 |
+| ReadyToRun | 32.27 ms | 0.799 ms | 0.747 ms |  0.97 |    0.04 |
+| NativeAot  | 10.92 ms | 0.604 ms | 0.565 ms |  0.33 |    0.02 |
+
+#### CLI BenchmarkDotNet (з папки `src/Showcase.Benchmarks`, після `dotnet run -c Release -f net10.0 --`)
+
+| Опція | Що робить |
+|---|---|
+| `--list flat` / `--list tree` | список бенчмарків без запуску (з `--filter` — лише відповідні) |
+| `--filter "*A*" "*B*"` | кілька шаблонів через пробіл; `--anyCategories` / `--allCategories` — за категоріями |
+| `--job short` / `dry` / `medium` / `long` | базовий job (додається до job-ів, заданих у класі!) |
+| `--runtimes net8.0 net10.0` | ті самі бенчмарки на кількох рантаймах (перший — baseline) |
+| `--memory`, `--threading`, `--exceptions` | діагностери без зміни коду |
+| `--disasm` | DisassemblyDiagnoser без зміни коду |
+| `--exporters json html csv` | додаткові експортери |
+| `--artifacts <шлях>` | куди складати результати |
+| `--join` | одна спільна таблиця для всіх вибраних класів |
+| `--statisticalTest 5%` | колонка тесту Манна–Вітні відносно baseline |
+| `--keepFiles` | не видаляти згенеровані проєкти (для діагностики збірки) |
+
+Приклад `--list tree --filter "*Basics*"`:
+
+```
+Showcase
+ └─Benchmarks
+    └─Basics
+       ├─BaselineRatioBenchmarks
+       │  ├─ForLoop
+       │  ├─ForeachLoop
+       │  └─LinqSum
+       ├─CategoriesBenchmarks
+       │  ├─LinearSearch
+       ...
+```
+
+Приклад `--filter "*MinimalBenchmark*" "*StaticMethodsBenchmarks.Iterative*" --job short --runtimes net8.0 net10.0 --memory --join` —
+два класи, два рантайми, одна таблиця:
+
+| Namespace                    | Type                    | Method         | Job       | Runtime   | Mean       | Error     | StdDev    | Ratio | RatioSD | Allocated | Alloc Ratio |
+|----------------------------- |------------------------ |--------------- |---------- |---------- |-----------:|----------:|----------:|------:|--------:|----------:|------------:|
+| Showcase.Benchmarks.Basics   | MinimalBenchmark        | SumWithForLoop | .NET 10.0 | .NET 10.0 | 457.707 ns | 32.764 ns | 1.7959 ns |  1.00 |    0.00 |         - |          NA |
+| Showcase.Benchmarks.Basics   | MinimalBenchmark        | SumWithForLoop | .NET 8.0  | .NET 8.0  | 457.422 ns | 10.150 ns | 0.5563 ns |  1.00 |    0.00 |         - |          NA |
+|                              |                         |                |           |           |            |           |           |       |         |           |             |
+| Showcase.Benchmarks.Advanced | StaticMethodsBenchmarks | Iterative      | .NET 10.0 | .NET 10.0 |   6.791 ns |  5.793 ns | 0.3175 ns |  0.60 |    0.02 |         - |          NA |
+| Showcase.Benchmarks.Advanced | StaticMethodsBenchmarks | Iterative      | .NET 8.0  | .NET 8.0  |  11.413 ns |  1.513 ns | 0.0829 ns |  1.00 |    0.01 |         - |          NA |
+
+Порівняння результатів **між запусками / комітами** — `scripts/compare-results.ps1` (JSON-експорт двох запусків, поріг у %).

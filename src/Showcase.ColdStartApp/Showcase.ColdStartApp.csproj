@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Мініатюрна програма для вимірювання холодного старту процесу (08_Advanced/ColdStartProcessBenchmarks).
+       Публікується з бенчмарка в трьох варіантах: JIT, ReadyToRun, NativeAOT. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Один фреймворк: скидаємо TargetFrameworks з Directory.Build.props -->
+    <TargetFrameworks></TargetFrameworks>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Showcase.ColdStartApp</RootNamespace>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+</Project>
