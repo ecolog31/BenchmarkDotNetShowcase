@@ -119,6 +119,14 @@ dotnet run -c Release -f net10.0 -- --filter "*NativeMemoryBenchmarks*" "*Hardwa
 | 09_RealWorld | `LoggingBenchmarks` | `[LoggerMessage]` source generator vs інтерполяція vs шаблон |
 | 09_RealWorld | `DataAccessBenchmarks` | ADO.NET vs Dapper vs EF Core (tracking / no-tracking), SQLite in-memory |
 | 09_RealWorld | `HttpClientReuseBenchmarks` | новий `HttpClient` на запит vs спільний (локальний `HttpListener`) |
+| 10_DotNet10Features | `StackAllocationBenchmarks` | escape analysis: масив / об'єкт / делегат без алокацій на .NET 10 |
+| 10_DotNet10Features | `DevirtualizationBenchmarks` | девіртуалізація `IEnumerable<T>` над масивом, `IReadOnlyList<T>`, делегатів |
+| 10_DotNet10Features | `LoopOptimizationsBenchmarks` | цикли (зворотний, Span-зріз, з кроком) + `[DisassemblyDiagnoser]` на трьох рантаймах |
+| 10_DotNet10Features | `SimdVersionsBenchmarks` | векторизовані API BCL і `Vector<T>`; `Vector128/256/512.IsHardwareAccelerated` |
+| 10_DotNet10Features | `BclImprovementsBenchmarks` | `string.Join`, `Contains`, `SearchValues`, `FrozenDictionary`, `[GeneratedRegex]` |
+| 10_DotNet10Features | `LockTypeBenchmarks` | `System.Threading.Lock` vs `lock(object)` (.NET 9 / 10) |
+| 10_DotNet10Features | `ParamsSpanBenchmarks` | `params ReadOnlySpan<T>` (C# 13) vs `params T[]` |
+| 10_DotNet10Features | `FieldKeywordBenchmarks` | ключове слово `field` (C# 14) — без накладних витрат |
 
 ## Як читати вивід
 
@@ -827,3 +835,138 @@ Newtonsoft у 1.5–2 рази повільніший і алокує в 2–3.7
 |-------------------- |---------:|---------:|---------:|------:|--------:|----------:|------------:|
 | NewClientPerRequest | 503.4 us | 512.2 us | 28.08 us |  1.00 |    0.07 |  23.45 KB |        1.00 |
 | SharedClient        | 138.1 us | 254.9 us | 13.97 us |  0.27 |    0.03 |   5.71 KB |        0.24 |
+
+### 10_DotNet10Features
+
+Спільна конфігурація `DotNetVersionsConfig`: ShortRun на .NET 8 (baseline), 9 і 10 + `[MemoryDiagnoser]`
+(колонки Job, Error, RatioSD, Alloc Ratio сховано). Запуск без `--job short`: `--filter "*DotNet10*"` — ~11 хвилин.
+`LockTypeBenchmarks` — лише .NET 9 і 10 (`System.Threading.Lock` немає в .NET 8; клас під `#if NET9_0_OR_GREATER`).
+
+**StackAllocationBenchmarks** — escape analysis: масив перестає алокуватися на .NET 10, об'єкт класу — вже на .NET 9,
+делегат-замикання на .NET 10 зменшується з 88 B до 24 B (делегат у стеку, об'єкт замикання — ще в купі):
+
+| Method                   | Runtime   | Mean      | StdDev    | Median    | Ratio | Gen0   | Allocated |
+|------------------------- |---------- |----------:|----------:|----------:|------:|-------:|----------:|
+| SmallArrayNotEscaping    | .NET 10.0 | 4.5143 ns | 0.0434 ns | 4.5021 ns |  0.54 |      - |         - |
+| SmallArrayNotEscaping    | .NET 8.0  | 8.3707 ns | 0.3376 ns | 8.1760 ns |  1.00 | 0.0033 |      56 B |
+| SmallArrayNotEscaping    | .NET 9.0  | 8.5367 ns | 0.1707 ns | 8.5821 ns |  1.02 | 0.0033 |      56 B |
+|                          |           |           |           |           |       |        |           |
+| SmallObjectNotEscaping   | .NET 10.0 | 0.0333 ns | 0.0213 ns | 0.0375 ns | 0.007 |      - |         - |
+| SmallObjectNotEscaping   | .NET 8.0  | 4.5781 ns | 0.4636 ns | 4.4135 ns | 1.007 | 0.0014 |      24 B |
+| SmallObjectNotEscaping   | .NET 9.0  | 0.0240 ns | 0.0162 ns | 0.0325 ns | 0.005 |      - |         - |
+|                          |           |           |           |           |       |        |           |
+| LocalDelegateNotEscaping | .NET 10.0 | 2.4224 ns | 0.3258 ns | 2.4022 ns |  0.27 | 0.0014 |      24 B |
+| LocalDelegateNotEscaping | .NET 8.0  | 8.8633 ns | 0.1124 ns | 8.8123 ns |  1.00 | 0.0053 |      88 B |
+| LocalDelegateNotEscaping | .NET 9.0  | 5.9278 ns | 0.0418 ns | 5.9404 ns |  0.67 | 0.0053 |      88 B |
+
+**DevirtualizationBenchmarks** — найбільший виграш розділу: `IReadOnlyList<int>` над масивом у 12 разів швидший,
+`foreach` через `IEnumerable<int>` — у 3.4 раза і без алокації енумератора (32 B → 0):
+
+| Method              | Runtime   | Mean       | StdDev    | Ratio | Gen0   | Allocated |
+|-------------------- |---------- |-----------:|----------:|------:|-------:|----------:|
+| ArrayViaIEnumerable | .NET 10.0 |   249.3 ns |  12.45 ns |  0.29 |      - |         - |
+| ArrayViaIEnumerable | .NET 8.0  |   858.2 ns | 115.54 ns |  1.01 | 0.0019 |      32 B |
+| ArrayViaIEnumerable | .NET 9.0  |   944.6 ns |  82.20 ns |  1.11 | 0.0019 |      32 B |
+|                     |           |            |           |       |        |           |
+| ReadOnlyListIndexer | .NET 10.0 |   325.2 ns |   3.57 ns |  0.08 |      - |         - |
+| ReadOnlyListIndexer | .NET 8.0  | 3,945.3 ns |  76.64 ns |  1.00 |      - |         - |
+| ReadOnlyListIndexer | .NET 9.0  | 3,367.1 ns |  68.08 ns |  0.85 |      - |         - |
+|                     |           |            |           |       |        |           |
+| DelegateCall        | .NET 10.0 |   250.1 ns |   4.64 ns |  0.51 |      - |         - |
+| DelegateCall        | .NET 8.0  |   491.7 ns |  11.01 ns |  1.00 |      - |         - |
+| DelegateCall        | .NET 9.0  |   480.7 ns |   3.13 ns |  0.98 |      - |         - |
+
+**ParamsSpanBenchmarks** — `params ReadOnlySpan<int>` не алокує на жодному рантаймі (це компілятор C# 13);
+а на .NET 10 escape analysis прибирає і масив `params int[]` (40 B → 0):
+
+| Method             | Runtime   | Mean     | StdDev    | Ratio | Gen0   | Allocated |
+|------------------- |---------- |---------:|----------:|------:|-------:|----------:|
+| ParamsArray        | .NET 10.0 | 1.626 ns | 0.0327 ns |  0.30 |      - |         - |
+| ParamsReadOnlySpan | .NET 10.0 | 1.432 ns | 0.0498 ns |  0.26 |      - |         - |
+| ParamsArray        | .NET 8.0  | 5.492 ns | 0.2709 ns |  1.00 | 0.0024 |      40 B |
+| ParamsReadOnlySpan | .NET 8.0  | 2.182 ns | 0.0622 ns |  0.40 |      - |         - |
+| ParamsArray        | .NET 9.0  | 5.571 ns | 0.5019 ns |  1.02 | 0.0024 |      40 B |
+| ParamsReadOnlySpan | .NET 9.0  | 2.221 ns | 0.0503 ns |  0.41 |      - |         - |
+
+**BclImprovementsBenchmarks** — `string.Join` −39%, `Contains(OrdinalIgnoreCase)` −27% на .NET 10; решта — ±8%:
+
+| Method                   | Runtime   | Mean     | StdDev   | Ratio | Gen0   | Allocated |
+|------------------------- |---------- |---------:|---------:|------:|-------:|----------:|
+| StringJoin               | .NET 10.0 | 347.9 ns |  8.22 ns |  0.61 | 0.0954 |    1600 B |
+| StringJoin               | .NET 8.0  | 568.0 ns | 27.01 ns |  1.00 | 0.0954 |    1600 B |
+| StringJoin               | .NET 9.0  | 543.7 ns | 46.23 ns |  0.96 | 0.0954 |    1600 B |
+|                          |           |          |          |       |        |           |
+| StringContainsIgnoreCase | .NET 10.0 | 301.8 ns |  6.08 ns |  0.73 |      - |         - |
+| StringContainsIgnoreCase | .NET 8.0  | 416.2 ns |  2.83 ns |  1.00 |      - |         - |
+| StringContainsIgnoreCase | .NET 9.0  | 450.5 ns |  9.09 ns |  1.08 |      - |         - |
+|                          |           |          |          |       |        |           |
+| SearchValuesIndexOfAny   | .NET 10.0 | 188.5 ns |  1.70 ns |  0.92 |      - |         - |
+| SearchValuesIndexOfAny   | .NET 8.0  | 204.0 ns |  0.58 ns |  1.00 |      - |         - |
+| SearchValuesIndexOfAny   | .NET 9.0  | 206.8 ns |  6.30 ns |  1.01 |      - |         - |
+|                          |           |          |          |       |        |           |
+| FrozenDictionaryLookups  | .NET 10.0 | 461.0 ns | 12.43 ns |  1.00 |      - |         - |
+| FrozenDictionaryLookups  | .NET 8.0  | 459.6 ns |  4.40 ns |  1.00 |      - |         - |
+| FrozenDictionaryLookups  | .NET 9.0  | 480.6 ns | 12.22 ns |  1.05 |      - |         - |
+|                          |           |          |          |       |        |           |
+| GeneratedRegexIsMatch    | .NET 10.0 | 161.8 ns |  1.81 ns |  0.92 |      - |         - |
+| GeneratedRegexIsMatch    | .NET 8.0  | 175.3 ns |  1.35 ns |  1.00 |      - |         - |
+| GeneratedRegexIsMatch    | .NET 9.0  | 180.3 ns |  1.03 ns |  1.03 |      - |         - |
+
+**LockTypeBenchmarks** — `Lock` на 25% швидший за `lock(object)` на .NET 9; у .NET 10 Monitor теж прискорився:
+
+| Method         | Runtime   | Mean     | StdDev    | Ratio | Allocated |
+|--------------- |---------- |---------:|----------:|------:|----------:|
+| LockOnObject   | .NET 10.0 | 4.826 ns | 0.0845 ns |  0.84 |         - |
+| LockOnLockType | .NET 10.0 | 4.336 ns | 0.1007 ns |  0.75 |         - |
+| LockOnObject   | .NET 9.0  | 5.751 ns | 0.1509 ns |  1.00 |         - |
+| LockOnLockType | .NET 9.0  | 4.299 ns | 0.0718 ns |  0.75 |         - |
+
+**SimdVersionsBenchmarks** — `Vector128=True, Vector256=True, Vector512=False, Vector<byte>.Count=32` (AVX2, без AVX-512).
+Код уже векторизований на .NET 8, тому приріст скромний: `Count` −15%, `IndexOfAny` −6%:
+
+| Method            | Runtime   | Mean       | StdDev    | Ratio | Allocated |
+|------------------ |---------- |-----------:|----------:|------:|----------:|
+| IndexOfAnyNewLine | .NET 10.0 |   990.6 ns |   9.57 ns |  0.94 |         - |
+| IndexOfAnyNewLine | .NET 8.0  | 1,049.0 ns |  16.81 ns |  1.00 |         - |
+| IndexOfAnyNewLine | .NET 9.0  | 1,055.8 ns |  32.18 ns |  1.01 |         - |
+|                   |           |            |           |       |           |
+| CountByte         | .NET 10.0 |   959.0 ns |   7.45 ns |  0.85 |         - |
+| CountByte         | .NET 8.0  | 1,144.2 ns | 154.01 ns |  1.01 |         - |
+| CountByte         | .NET 9.0  |   984.5 ns |  15.21 ns |  0.87 |         - |
+|                   |           |            |           |       |           |
+| SequenceEqual     | .NET 10.0 | 1,053.1 ns |  14.43 ns |  1.01 |         - |
+| SequenceEqual     | .NET 8.0  | 1,047.1 ns |   8.36 ns |  1.00 |         - |
+| SequenceEqual     | .NET 9.0  | 1,021.3 ns |   9.39 ns |  0.98 |         - |
+|                   |           |            |           |       |           |
+| VectorTSum        | .NET 10.0 | 1,036.9 ns |  32.94 ns |  1.01 |         - |
+| VectorTSum        | .NET 8.0  | 1,022.2 ns |  27.37 ns |  1.00 |         - |
+| VectorTSum        | .NET 9.0  | 1,050.5 ns |  59.58 ns |  1.03 |         - |
+
+**LoopOptimizationsBenchmarks** — очікувалося прискорення на .NET 10, але його **немає**: ці прості цикли JIT
+оптимізував уже в .NET 8 (Code Size майже однаковий). Новіший рантайм не прискорює кожен шматок коду:
+
+| Method        | Runtime   | Mean     | StdDev    | Ratio | Code Size | Allocated |
+|-------------- |---------- |---------:|----------:|------:|----------:|----------:|
+| ReverseLoop   | .NET 10.0 | 2.637 us | 0.3856 us |  1.06 |      88 B |         - |
+| ReverseLoop   | .NET 8.0  | 2.481 us | 0.0381 us |  1.00 |      88 B |         - |
+| ReverseLoop   | .NET 9.0  | 2.379 us | 0.0282 us |  0.96 |      85 B |         - |
+|               |           |          |           |       |           |           |
+| SpanSliceLoop | .NET 10.0 | 2.471 us | 0.0423 us |  1.02 |      69 B |         - |
+| SpanSliceLoop | .NET 8.0  | 2.416 us | 0.0093 us |  1.00 |      71 B |         - |
+| SpanSliceLoop | .NET 9.0  | 2.640 us | 0.1831 us |  1.09 |      73 B |         - |
+|               |           |          |           |       |           |           |
+| StridedLoop   | .NET 10.0 | 1.267 us | 0.0095 us |  1.01 |      52 B |         - |
+| StridedLoop   | .NET 8.0  | 1.251 us | 0.0161 us |  1.00 |      55 B |         - |
+| StridedLoop   | .NET 9.0  | 1.288 us | 0.0389 us |  1.03 |      52 B |         - |
+
+**FieldKeywordBenchmarks** — `field` (C# 14) дає той самий IL, що й ручне поле (рядок .NET 10 FieldKeyword має
+великий StdDev — шум короткого запуску):
+
+| Method               | Runtime   | Mean     | StdDev   | Ratio | Allocated |
+|--------------------- |---------- |---------:|---------:|------:|----------:|
+| ExplicitBackingField | .NET 10.0 | 246.5 ns |  1.92 ns |  0.99 |         - |
+| FieldKeyword         | .NET 10.0 | 280.3 ns | 38.25 ns |  1.13 |         - |
+| ExplicitBackingField | .NET 8.0  | 248.1 ns |  4.97 ns |  1.00 |         - |
+| FieldKeyword         | .NET 8.0  | 247.5 ns |  2.61 ns |  1.00 |         - |
+| ExplicitBackingField | .NET 9.0  | 247.1 ns |  6.20 ns |  1.00 |         - |
+| FieldKeyword         | .NET 9.0  | 242.0 ns |  1.53 ns |  0.98 |         - |
