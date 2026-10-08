@@ -3,11 +3,30 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>Showcase.Benchmarks</RootNamespace>
+    <!-- Версію можна перевизначити з командного рядка: /p:NewtonsoftJsonVersion=12.0.3
+         (так 08_Advanced/NuGetVersionsBenchmarks порівнює дві версії пакета). -->
+    <NewtonsoftJsonVersion Condition="'$(NewtonsoftJsonVersion)' == ''">13.0.3</NewtonsoftJsonVersion>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageReference Include="BenchmarkDotNet.Diagnostics.Windows" Version="0.15.8" />
+    <PackageReference Include="Newtonsoft.Json" Version="$(NewtonsoftJsonVersion)" />
+  </ItemGroup>
+
+  <!-- 09_RealWorld -->
+  <ItemGroup>
+    <PackageReference Include="MessagePack" Version="3.1.11" />
+    <PackageReference Include="System.IO.Hashing" Version="10.0.12" />
+    <PackageReference Include="Dapper" Version="2.1.89" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.12" />
+  </ItemGroup>
+  <!-- EF Core 10 підтримує лише net10.0; для net8.0/net9.0 — EF Core 9 (тягне за собою Microsoft.Data.Sqlite) -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.12" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' != 'net10.0'">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.20" />
   </ItemGroup>
 
   <ItemGroup>
