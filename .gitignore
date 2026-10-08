@@ -1,0 +1,13 @@
+# Build output
+bin/
+obj/
+
+# BenchmarkDotNet results
+BenchmarkDotNet.Artifacts/
+
+# IDE
+.vs/
+*.user
+*.suo
+.idea/
+.vscode/
