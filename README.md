@@ -410,23 +410,29 @@ ZeroMeasurement
 
 **NativeMemoryBenchmarks** — запуск від адміністратора (без прав валідатор зупиняє запуск:
 `Must be elevated (Admin) to use ETW Kernel Session`). Колонки `Allocated native memory` і `Native memory leak` бачать те,
-чого не бачить `[MemoryDiagnoser]` (Allocated = 0 у всіх рядках). Витік 1 КБ на операцію знайдено точно:
+чого не бачить `[MemoryDiagnoser]` (Allocated = 0 у всіх рядках). Витік 1 КБ на операцію знайдено точно.
+Повний прогін (не `--job short`):
 
-| Method              | Mean      | Error      | StdDev    | Ratio | RatioSD | Allocated native memory | Native memory leak | Allocated | Alloc Ratio |
-|-------------------- |----------:|-----------:|----------:|------:|--------:|------------------------:|-------------------:|----------:|------------:|
-| NativeAllocAndFree  |  44.07 ns | 103.786 ns |  5.689 ns |  1.01 |    0.17 |                 1,024 B |                  - |         - |          NA |
-| NativeAllocLeak     | 224.90 ns | 382.784 ns | 20.982 ns |  5.17 |    0.75 |                 1,024 B |            1,024 B |         - |          NA |
-| AllocHGlobalAndFree |  42.93 ns |   1.053 ns |  0.058 ns |  0.99 |    0.12 |                 1,024 B |                  - |         - |          NA |
+| Method              | Mean      | Error     | StdDev    | Ratio | RatioSD | Allocated native memory | Native memory leak | Allocated | Alloc Ratio |
+|-------------------- |----------:|----------:|----------:|------:|--------:|------------------------:|-------------------:|----------:|------------:|
+| NativeAllocAndFree  |  37.25 ns |  0.475 ns |  0.856 ns |  1.00 |    0.03 |                 1,024 B |                  - |         - |          NA |
+| NativeAllocLeak     | 290.73 ns | 19.495 ns | 56.558 ns |  7.81 |    1.52 |                 1,024 B |            1,024 B |         - |          NA |
+| AllocHGlobalAndFree |  41.09 ns |  0.188 ns |  0.209 ns |  1.10 |    0.02 |                 1,024 B |                  - |         - |          NA |
 
 ```
-NativeMemoryBenchmarks.NativeAllocLeak: ShortRun(InvocationCount=1000, ...)
+NativeMemoryBenchmarks.NativeAllocLeak: Job-SUGWQI(InvocationCount=1000, UnrollFactor=1)
 Native memory allocated per single operation: 1024B
 Count of allocated object: 1
 Native memory leak per single operation: 1024B
 Count of not deallocated object: 1
 ```
 
-`NativeAllocLeak` ще й у 5 разів повільніший — імовірно, тому що без `Free` аллокатор щоразу шукає новий блок, а не повторно віддає щойно звільнений.
+`NativeAllocLeak` ще й у ~8 разів повільніший, а його розподіл BenchmarkDotNet позначив як бімодальний (mValue = 3.62,
+викиди 460–489 ns). Імовірне пояснення: здебільшого блок береться з уже виділеної купи, а періодично купа просить
+у Windows нові сторінки — це й дає другий, повільний режим. `AllocHGlobal` стабільно на 10% повільніший за `NativeMemory.Alloc`.
+
+Попередження `MinIterationTime` (ітерація 39–184 µs) тут свідомий компроміс: `[InvocationCount(1000)]` обмежує витік.
+Для ітерацій по 100 мс знадобилося б ~100 000 викликів, тобто ~100 МБ витоку на ітерацію.
 
 ### 04_Runtimes
 
@@ -493,23 +499,25 @@ Gen1 87 проти 776 на 1000 операцій) і трохи швидший.
 ### 05_Diagnosers
 
 `[DotTraceDiagnoser]` / `[DotMemoryDiagnoser]` не додано: за планом — лише якщо встановлено JetBrains-інструменти (їх немає).
-Класи з ETW (`HardwareCounters`, `EtwProfiler`, `Inlining`, `TailCall`) запускалися з терміналу адміністратора.
+Класи з ETW (`HardwareCounters`, `EtwProfiler`, `Inlining`, `TailCall`) запускалися з терміналу адміністратора;
+таблиці нижче — з повного прогону (не `--job short`). Відношення збіглися з коротким прогоном у межах кількох відсотків.
 
 **BranchPredictionHardwareCountersBenchmarks** — однакові дані, однаковий код, відрізняється лише порядок.
-На випадкових даних процесор помиляється в передбаченні переходу в 40 разів частіше — і код удвічі повільніший:
+На випадкових даних процесор помиляється в передбаченні переходу в 30 разів частіше — і код удвічі повільніший
+(розподіл UnsortedData бімодальний: імовірно, передбачувач частково «вивчає» масив, що повторюється між викликами):
 
-| Method       | Mean     | Error     | StdDev   | Ratio | RatioSD | BranchMispredictions/Op | BranchInstructions/Op |
-|------------- |---------:|----------:|---------:|------:|--------:|------------------------:|----------------------:|
-| SortedData   | 15.82 us |  1.373 us | 0.075 us |  1.00 |    0.01 |                      30 |                78,364 |
-| UnsortedData | 33.69 us | 76.624 us | 4.200 us |  2.13 |    0.23 |                   1,203 |                81,145 |
+| Method       | Mean     | Error    | StdDev   | Ratio | RatioSD | BranchInstructions/Op | BranchMispredictions/Op |
+|------------- |---------:|---------:|---------:|------:|--------:|----------------------:|------------------------:|
+| SortedData   | 16.04 us | 0.314 us | 0.308 us |  1.00 |    0.03 |                78,477 |                      31 |
+| UnsortedData | 31.47 us | 0.624 us | 1.447 us |  1.96 |    0.10 |                80,970 |                     936 |
 
-**CacheMissesHardwareCountersBenchmarks** — матриця 16 МБ: обхід по стовпцях дає у 284 рази більше промахів кешу
-(4 млн проти 14 тис. на операцію) і в 5.4 раза повільніший:
+**CacheMissesHardwareCountersBenchmarks** — матриця 16 МБ: обхід по стовпцях дає у 288 разів більше промахів кешу
+(4 млн проти 14 тис. на операцію) і в 5.7 раза повільніший:
 
-| Method      | Mean      | Error    | StdDev    | Ratio | RatioSD | CacheMisses/Op |
-|------------ |----------:|---------:|----------:|------:|--------:|---------------:|
-| RowMajor    |  3.053 ms | 1.752 ms | 0.0960 ms |  1.00 |    0.04 |         14,232 |
-| ColumnMajor | 16.545 ms | 4.749 ms | 0.2603 ms |  5.42 |    0.17 |      4,043,232 |
+| Method      | Mean      | Error     | StdDev    | Ratio | RatioSD | CacheMisses/Op |
+|------------ |----------:|----------:|----------:|------:|--------:|---------------:|
+| RowMajor    |  2.930 ms | 0.0109 ms | 0.0091 ms |  1.00 |    0.00 |         13,761 |
+| ColumnMajor | 16.630 ms | 0.1054 ms | 0.0880 ms |  5.68 |    0.03 |      3,963,486 |
 
 Обидва лічильники Windows надала й на AMD Ryzen 5 5600. `[HardwareCounters]` працює через ETW, тому під таблицями теж
 з'являється «Diagnostic Output - EtwProfiler» з `.etl`-файлами.
@@ -520,17 +528,17 @@ Gen1 87 проти 776 на 1000 операцій) і трохи швидший.
 
 | Method            | Mean     | Error    | StdDev   |
 |------------------ |---------:|---------:|---------:|
-| ParseAndSerialize | 20.45 us | 3.473 us | 0.190 us |
+| ParseAndSerialize | 20.68 us | 0.080 us | 0.075 us |
 
 **InliningDiagnoserBenchmarks** — `AddNoInlining` не вбудовано (`Fail Reason: noinline per IL/cached result`), і 1 000 викликів
-коштують ×4.8. Несподіванка: «великий» `AddLarge` з шістьма `if` **вбудовано** (рядка Fail Reason немає) —
+коштують ×4.8 (~0.9 ns на виклик). Несподіванка: «великий» `AddLarge` з шістьма `if` **вбудовано** (рядка Fail Reason немає) —
 ліміт розміру IL не перевищено; `CallsLargeMethod` повільніший лише через ділення в кожній ітерації:
 
-| Method                | Mean       | Error     | StdDev  | Ratio | RatioSD |
-|---------------------- |-----------:|----------:|--------:|------:|--------:|
-| CallsInlinedMethod    |   233.8 ns |  20.32 ns | 1.11 ns |  1.00 |    0.01 |
-| CallsNoInliningMethod | 1,132.0 ns |  17.10 ns | 0.94 ns |  4.84 |    0.02 |
-| CallsLargeMethod      | 5,080.2 ns | 170.89 ns | 9.37 ns | 21.73 |    0.10 |
+| Method                | Mean       | Error    | StdDev   | Ratio | RatioSD |
+|---------------------- |-----------:|---------:|---------:|------:|--------:|
+| CallsInlinedMethod    |   236.1 ns |  4.01 ns |  4.12 ns |  1.00 |    0.02 |
+| CallsNoInliningMethod | 1,133.5 ns |  3.64 ns |  3.04 ns |  4.80 |    0.08 |
+| CallsLargeMethod      | 4,719.1 ns | 25.82 ns | 21.56 ns | 19.99 |    0.34 |
 
 ```
 Inliner: Showcase.Benchmarks.Diagnosers.InliningDiagnoserBenchmarks.CallsNoInliningMethod - instance int32  ()
@@ -541,10 +549,10 @@ Fail Reason: noinline per IL/cached result
 **TailCallDiagnoserBenchmarks** — JIT не просто зробив хвостовий виклик, а перетворив рекурсію на цикл
 (`Tail call type: RecursiveLoop`); для нехвостової рекурсії подій немає. Різниця — ×3.4:
 
-| Method           | Mean     | Error     | StdDev   | Ratio | RatioSD |
-|----------------- |---------:|----------:|---------:|------:|--------:|
-| TailRecursive    | 233.2 ns |  73.50 ns |  4.03 ns |  1.00 |    0.02 |
-| NotTailRecursive | 799.1 ns | 189.90 ns | 10.41 ns |  3.43 |    0.06 |
+| Method           | Mean     | Error   | StdDev  | Ratio |
+|----------------- |---------:|--------:|--------:|------:|
+| TailRecursive    | 229.4 ns | 0.45 ns | 0.37 ns |  1.00 |
+| NotTailRecursive | 790.9 ns | 0.58 ns | 0.51 ns |  3.45 |
 
 ```
 Callee: Showcase.Benchmarks.Diagnosers.TailCallDiagnoserBenchmarks.SumTailRecursive - int64  (int32,int64)
