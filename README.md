@@ -46,6 +46,12 @@ dotnet run -c Release -f net10.0 -- --filter "*Basics*" --job short
 | 01_Basics | `OperationsPerInvokeBenchmarks` | `OperationsPerInvoke`: час на одну операцію в пакетному методі |
 | 01_Basics | `OrderingAndRankBenchmarks` | `[Orderer]`, `[RankColumn]`, `[LogicalGroupColumn]`, `[GroupBenchmarksBy(ByParams)]` |
 | 01_Basics | `CommonPitfallsBenchmarks` | dead code elimination, згортання констант, відкладений LINQ, `Consumer` |
+| 02_Parameters | `ParamsCartesianBenchmarks` | `[Params]` з enum, bool, string; декартів добуток (3 × 2 × 2 = 12 рядків) |
+| 02_Parameters | `ParamsSourceBenchmarks` | `[ParamsSource]` зі складними об'єктами та `ToString()` для таблиці |
+| 02_Parameters | `ParamsAllValuesBenchmarks` | `[ParamsAllValues]` — усі значення enum автоматично |
+| 02_Parameters | `ArgumentsBenchmarks` | `[Arguments]` на методі |
+| 02_Parameters | `ArgumentsSourceBenchmarks` | `[ArgumentsSource]` з об'єктами-кейсами |
+| 02_Parameters | `CollectionsBySizeBenchmarks` | `List<T>` vs `T[]` vs `Span<T>` на 10 / 1 000 / 100 000 |
 
 ## Результати
 
@@ -123,3 +129,90 @@ ZeroMeasurement
 Відкладений LINQ-запит (`IEnumerable` з `Where`/`Select`) повернути з бенчмарка взагалі не вийде:
 валідатор зупиняє запуск з помилкою
 `returns a deferred execution result (IEnumerable<Int32>). You need to either change the method declaration to return a materialized result or consume it on your own.`
+
+### 02_Parameters
+
+**ParamsCartesianBenchmarks** — 12 комбінацій трьох `[Params]`. `InvariantCulture` на довгому рядку,
+що відрізняється регістром, у ~2000 разів дорожчий за `Ordinal`:
+
+| Method       | Comparison        | SameCase | Length | Mean         | Error       | StdDev     |
+|------------- |------------------ |--------- |------- |-------------:|------------:|-----------:|
+| StringEquals | InvariantCulture  | False    | long   | 4,044.148 ns | 272.5747 ns | 14.9407 ns |
+| StringEquals | InvariantCulture  | False    | short  |   111.615 ns |   2.3363 ns |  0.1281 ns |
+| StringEquals | InvariantCulture  | True     | long   |   453.803 ns |  19.1528 ns |  1.0498 ns |
+| StringEquals | InvariantCulture  | True     | short  |    22.664 ns |   0.3840 ns |  0.0210 ns |
+| StringEquals | Ordinal           | False    | long   |     2.099 ns |   0.0627 ns |  0.0034 ns |
+| StringEquals | Ordinal           | False    | short  |     2.093 ns |   0.2353 ns |  0.0129 ns |
+| StringEquals | Ordinal           | True     | long   |    27.091 ns |   0.2166 ns |  0.0119 ns |
+| StringEquals | Ordinal           | True     | short  |     2.411 ns |   0.3008 ns |  0.0165 ns |
+| StringEquals | OrdinalIgnoreCase | False    | long   |    87.132 ns |  18.9864 ns |  1.0407 ns |
+| StringEquals | OrdinalIgnoreCase | False    | short  |     4.621 ns |   1.3672 ns |  0.0749 ns |
+| StringEquals | OrdinalIgnoreCase | True     | long   |    54.817 ns |  19.4840 ns |  1.0680 ns |
+| StringEquals | OrdinalIgnoreCase | True     | short  |     3.698 ns |   0.0605 ns |  0.0033 ns |
+
+**ParamsSourceBenchmarks** — `Array.Sort` на різних «формах» даних (колонка Shape — це `ToString()` об'єкта):
+
+| Method    | Shape           | Mean      | Error     | StdDev   |
+|---------- |---------------- |----------:|----------:|---------:|
+| ArraySort | FewUnique-10000 |  61.03 us | 17.651 us | 0.968 us |
+| ArraySort | Random-10000    | 320.27 us | 25.540 us | 1.400 us |
+| ArraySort | Sawtooth-10000  | 137.42 us |  7.539 us | 0.413 us |
+| ArraySort | Sorted-10000    |  38.45 us |  5.173 us | 0.284 us |
+
+**ParamsAllValuesBenchmarks** — усі значення enum без ручного переліку. Розгалуження виграє на
+передбачуваних даних і програє на випадкових; branchless-варіант стабільний:
+
+| Method     | Pattern     | Mean      | Error     | StdDev    | Ratio | RatioSD |
+|----------- |------------ |----------:|----------:|----------:|------:|--------:|
+| Branchy    | Random      | 20.656 us | 1.1821 us | 0.0648 us |  1.00 |    0.00 |
+| Branchless | Random      | 14.836 us | 0.2793 us | 0.0153 us |  0.72 |    0.00 |
+|            |             |           |           |           |       |         |
+| Branchy    | Sorted      | 11.570 us | 7.9172 us | 0.4340 us |  1.00 |    0.05 |
+| Branchless | Sorted      | 14.862 us | 0.5143 us | 0.0282 us |  1.29 |    0.04 |
+|            |             |           |           |           |       |         |
+| Branchy    | Alternating | 11.262 us | 0.4601 us | 0.0252 us |  1.00 |    0.00 |
+| Branchless | Alternating | 14.849 us | 0.2774 us | 0.0152 us |  1.32 |    0.00 |
+|            |             |           |           |           |       |         |
+| Branchy    | AllSame     |  8.768 us | 0.3168 us | 0.0174 us |  1.00 |    0.00 |
+| Branchless | AllSame     | 14.870 us | 0.6975 us | 0.0382 us |  1.70 |    0.00 |
+
+**ArgumentsBenchmarks** — парне число відсіюється одразу, тому `ZeroMeasurement`:
+
+| Method  | number  | Mean        | Error      | StdDev    |
+|-------- |-------- |------------:|-----------:|----------:|
+| IsPrime | 7919    |  56.5047 ns |  0.6276 ns | 0.0344 ns |
+| IsPrime | 104729  | 216.1415 ns |  8.3298 ns | 0.4566 ns |
+| IsPrime | 1000000 |   0.0000 ns |  0.0000 ns | 0.0000 ns |
+| IsPrime | 1000003 | 673.4804 ns | 13.8972 ns | 0.7618 ns |
+
+**ArgumentsSourceBenchmarks** — пошук підрядка, ordinal vs культурний (~30× на довгому тексті):
+
+| Method                  | searchCase | Mean         | Error       | StdDev     | Ratio | RatioSD |
+|------------------------ |----------- |-------------:|------------:|-----------:|------:|--------:|
+| IndexOfOrdinal          | AtEnd      |   297.972 ns |  97.6923 ns |  5.3548 ns |  1.00 |    0.02 |
+| IndexOfInvariantCulture | AtEnd      | 9,117.468 ns | 536.3960 ns | 29.4017 ns | 30.60 |    0.48 |
+|                         |            |              |             |            |       |         |
+| IndexOfOrdinal          | AtStart    |     4.231 ns |   0.1306 ns |  0.0072 ns |  1.00 |    0.00 |
+| IndexOfInvariantCulture | AtStart    |    14.388 ns |   1.0297 ns |  0.0564 ns |  3.40 |    0.01 |
+|                         |            |              |             |            |       |         |
+| IndexOfOrdinal          | InMiddle   |   161.235 ns |  79.3205 ns |  4.3478 ns |  1.00 |    0.03 |
+| IndexOfInvariantCulture | InMiddle   | 4,610.623 ns | 296.6716 ns | 16.2616 ns | 28.61 |    0.68 |
+|                         |            |              |             |            |       |         |
+| IndexOfOrdinal          | Missing    |   300.195 ns |  58.9114 ns |  3.2291 ns |  1.00 |    0.01 |
+| IndexOfInvariantCulture | Missing    | 9,077.551 ns |  98.4889 ns |  5.3985 ns | 30.24 |    0.28 |
+
+**CollectionsBySizeBenchmarks** — `List<T>` стабільно ~2× повільніший за масив, `Span<T>` ≈ масив:
+
+| Method   | Size   | Mean          | Error         | StdDev      | Ratio | RatioSD |
+|--------- |------- |--------------:|--------------:|------------:|------:|--------:|
+| SumArray | 10     |      2.473 ns |     0.1324 ns |   0.0073 ns |  1.00 |    0.00 |
+| SumList  | 10     |      4.974 ns |     0.9983 ns |   0.0547 ns |  2.01 |    0.02 |
+| SumSpan  | 10     |      2.487 ns |     0.0792 ns |   0.0043 ns |  1.01 |    0.00 |
+|          |        |               |               |             |       |         |
+| SumArray | 1000   |    235.468 ns |    88.1310 ns |   4.8308 ns |  1.00 |    0.02 |
+| SumList  | 1000   |    459.814 ns |    14.6857 ns |   0.8050 ns |  1.95 |    0.03 |
+| SumSpan  | 1000   |    288.086 ns | 1,258.0679 ns |  68.9589 ns |  1.22 |    0.25 |
+|          |        |               |               |             |       |         |
+| SumArray | 100000 | 22,712.191 ns |   668.0544 ns |  36.6183 ns |  1.00 |    0.00 |
+| SumList  | 100000 | 45,396.820 ns | 1,459.5633 ns |  80.0036 ns |  2.00 |    0.00 |
+| SumSpan  | 100000 | 22,881.637 ns | 5,591.3734 ns | 306.4820 ns |  1.01 |    0.01 |
