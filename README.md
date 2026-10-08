@@ -36,6 +36,16 @@ dotnet run -c Release -f net10.0 -- --filter "*Basics*" --job short
 `-f net10.0` обов'язковий: проєкт націлений на кілька фреймворків, і `dotnet run` без нього не стартує.
 Результати зберігаються в `BenchmarkDotNet.Artifacts/` (не комітяться).
 
+## Бенчмарки для адміністратора
+
+Ці класи використовують ETW-сесію ядра Windows. Без прав адміністратора валідатор зупиняє запуск з помилкою
+`Must be elevated (Admin) to use ETW Kernel Session`. Запускати з терміналу «Run as administrator»,
+з папки `src/Showcase.Benchmarks`:
+
+```powershell
+dotnet run -c Release -f net10.0 -- --filter "*NativeMemoryBenchmarks*" --job short
+```
+
 ## Фічі → класи
 
 | Розділ | Клас | Що показує |
@@ -52,6 +62,13 @@ dotnet run -c Release -f net10.0 -- --filter "*Basics*" --job short
 | 02_Parameters | `ArgumentsBenchmarks` | `[Arguments]` на методі |
 | 02_Parameters | `ArgumentsSourceBenchmarks` | `[ArgumentsSource]` з об'єктами-кейсами |
 | 02_Parameters | `CollectionsBySizeBenchmarks` | `List<T>` vs `T[]` vs `Span<T>` на 10 / 1 000 / 100 000 |
+| 03_Memory | `StringBuildingBenchmarks` | `[MemoryDiagnoser]`: `+=` vs `StringBuilder` vs `string.Create` vs `stackalloc Span<char>` |
+| 03_Memory | `ClassVsStructBenchmarks` | алокації `class` vs `struct` vs `record struct` |
+| 03_Memory | `LinqVsLoopBenchmarks` | алокації ітераторів LINQ і проміжного `ToList()` |
+| 03_Memory | `ArrayPoolBenchmarks` | `ArrayPool<T>` vs `new`; Large Object Heap і Gen2 |
+| 03_Memory | `ThreadingDiagnoserBenchmarks` | `[ThreadingDiagnoser]`: Lock Contentions, Completed Work Items |
+| 03_Memory | `ExceptionCostBenchmarks` | `[ExceptionDiagnoser]`: ціна винятку vs `TryParse` |
+| 03_Memory | `NativeMemoryBenchmarks` | `[NativeMemoryProfiler]`: native-алокації та витік (**адміністратор**) |
 
 ## Результати
 
@@ -216,3 +233,70 @@ ZeroMeasurement
 | SumArray | 100000 | 22,712.191 ns |   668.0544 ns |  36.6183 ns |  1.00 |    0.00 |
 | SumList  | 100000 | 45,396.820 ns | 1,459.5633 ns |  80.0036 ns |  2.00 |    0.00 |
 | SumSpan  | 100000 | 22,881.637 ns | 5,591.3734 ns | 306.4820 ns |  1.01 |    0.01 |
+
+### 03_Memory
+
+**StringBuildingBenchmarks** — `+=` на 100 елементах алокує 33 КБ проти 600 B у `string.Create`/`stackalloc`.
+Перша версія `string.Create` рахувала довжину через `Math.Log10` і була повільнішою за `StringBuilder`
+(727 ns на Count=100); після заміни на цілочисельний підрахунок цифр — 362 ns. Вимірюйте і допоміжний код теж.
+
+| Method         | Count | Mean        | Error       | StdDev    | Ratio | RatioSD | Gen0   | Gen1   | Allocated | Alloc Ratio |
+|--------------- |------ |------------:|------------:|----------:|------:|--------:|-------:|-------:|----------:|------------:|
+| Concatenation  | 10    |   109.01 ns |    26.97 ns |  1.478 ns |  1.00 |    0.02 | 0.0421 |      - |     704 B |        1.00 |
+| StringBuilder  | 10    |    59.67 ns |    34.11 ns |  1.870 ns |  0.55 |    0.02 | 0.0162 |      - |     272 B |        0.39 |
+| StringCreate   | 10    |    30.07 ns |    12.21 ns |  0.669 ns |  0.28 |    0.01 | 0.0038 |      - |      64 B |        0.09 |
+| StackallocSpan | 10    |    48.33 ns |    10.43 ns |  0.572 ns |  0.44 |    0.01 | 0.0038 |      - |      64 B |        0.09 |
+|                |       |             |             |           |       |         |        |        |           |             |
+| Concatenation  | 100   | 2,022.07 ns | 1,083.17 ns | 59.372 ns |  1.00 |    0.04 | 2.0218 |      - |   33824 B |        1.00 |
+| StringBuilder  | 100   |   413.47 ns |    48.00 ns |  2.631 ns |  0.20 |    0.01 | 0.1225 | 0.0005 |    2056 B |        0.06 |
+| StringCreate   | 100   |   361.75 ns |    34.48 ns |  1.890 ns |  0.18 |    0.00 | 0.0358 |      - |     600 B |        0.02 |
+| StackallocSpan | 100   |   299.37 ns |    69.12 ns |  3.789 ns |  0.15 |    0.00 | 0.0358 |      - |     600 B |        0.02 |
+
+**ClassVsStructBenchmarks** — масив структур у 4 рази менший і в 3 рази швидший; `record struct` = `struct`:
+
+| Method       | Mean     | Error     | StdDev    | Ratio | RatioSD | Gen0   | Gen1   | Allocated | Alloc Ratio |
+|------------- |---------:|----------:|----------:|------:|--------:|-------:|-------:|----------:|------------:|
+| Class        | 3.308 us | 1.7231 us | 0.0944 us |  1.00 |    0.04 | 1.9150 | 0.2098 |  31.27 KB |        1.00 |
+| Struct       | 1.035 us | 0.2569 us | 0.0141 us |  0.31 |    0.01 | 0.4787 |      - |   7.84 KB |        0.25 |
+| RecordStruct | 1.074 us | 0.2136 us | 0.0117 us |  0.32 |    0.01 | 0.4787 |      - |   7.84 KB |        0.25 |
+
+**LinqVsLoopBenchmarks** — ланцюжок LINQ алокує лише 104 B ітераторів, але `ToList()` посередині — 20 КБ:
+
+| Method         | Mean      | Error     | StdDev    | Ratio | Gen0   | Gen1   | Allocated | Alloc Ratio |
+|--------------- |----------:|----------:|----------:|------:|-------:|-------:|----------:|------------:|
+| ForLoop        |  3.648 us | 0.1076 us | 0.0059 us |  1.00 |      - |      - |         - |          NA |
+| LinqChain      | 10.316 us | 0.4940 us | 0.0271 us |  2.83 |      - |      - |     104 B |          NA |
+| LinqWithToList | 14.316 us | 0.8284 us | 0.0454 us |  3.92 | 1.1902 | 0.0763 |   20176 B |          NA |
+
+**ArrayPoolBenchmarks** — масив 128 КБ потрапляє в Large Object Heap: однакові Gen0 = Gen1 = Gen2 означають,
+що кожна збірка — повна. Пул прибирає алокації повністю і прискорює в 23 рази:
+
+| Method       | Size   | Mean         | Error        | StdDev     | Ratio | RatioSD | Gen0    | Gen1    | Gen2    | Allocated | Alloc Ratio |
+|------------- |------- |-------------:|-------------:|-----------:|------:|--------:|--------:|--------:|--------:|----------:|------------:|
+| NewArray     | 1024   |     28.75 ns |    14.972 ns |   0.821 ns |  1.00 |    0.03 |  0.0626 |       - |       - |    1048 B |        1.00 |
+| RentFromPool | 1024   |     14.46 ns |     0.395 ns |   0.022 ns |  0.50 |    0.01 |       - |       - |       - |         - |        0.00 |
+|              |        |              |              |            |       |         |         |         |         |           |             |
+| NewArray     | 131072 | 30,593.15 ns | 3,478.870 ns | 190.689 ns |  1.00 |    0.01 | 41.6260 | 41.6260 | 41.6260 |  131110 B |        1.00 |
+| RentFromPool | 131072 |  1,328.47 ns |   147.787 ns |   8.101 ns |  0.04 |    0.00 |       - |       - |       - |         - |        0.00 |
+
+**ThreadingDiagnoserBenchmarks** — 100 000 інкрементів із `Parallel.For`; локальні суми в 185 разів швидші за `lock`:
+
+| Method                       | Mean        | Error     | StdDev    | Ratio | Completed Work Items | Lock Contentions |
+|----------------------------- |------------:|----------:|----------:|------:|---------------------:|-----------------:|
+| SharedCounterWithLock        | 4,988.76 us | 221.07 us | 12.118 us | 1.000 |              18.4766 |          31.0156 |
+| SharedCounterWithInterlocked | 1,898.04 us | 114.54 us |  6.279 us | 0.380 |              12.6191 |                - |
+| ThreadLocalSums              |    27.03 us |  12.05 us |  0.661 us | 0.005 |              11.9592 |           0.0001 |
+
+**ExceptionCostBenchmarks** — один виняток коштує ~1.8 µs і 480 B:
+
+| Method         | Input | Mean         | Error      | StdDev    | Ratio  | RatioSD | Gen0   | Exceptions | Allocated | Alloc Ratio |
+|--------------- |------ |-------------:|-----------:|----------:|-------:|--------:|-------:|-----------:|----------:|------------:|
+| TryParse       | 12345 |     6.995 ns |  0.5703 ns | 0.0313 ns |   1.00 |    0.01 |      - |          - |         - |          NA |
+| ParseWithCatch | 12345 |     7.424 ns |  0.3543 ns | 0.0194 ns |   1.06 |    0.00 |      - |          - |         - |          NA |
+|                |       |              |            |           |        |         |        |            |           |             |
+| TryParse       | 12x45 |     8.164 ns |  0.9748 ns | 0.0534 ns |   1.00 |    0.01 |      - |          - |         - |          NA |
+| ParseWithCatch | 12x45 | 1,771.886 ns | 77.0907 ns | 4.2256 ns | 217.04 |    1.31 | 0.0286 |     1.0000 |     480 B |          NA |
+
+**NativeMemoryBenchmarks** — потребує адміністратора. Без нього валідатор зупиняє запуск:
+`Must be elevated (Admin) to use ETW Kernel Session (required for Hardware Counters and EtwProfiler).`
+Результати — після запуску з терміналу адміністратора (див. розділ «Бенчмарки для адміністратора»).
