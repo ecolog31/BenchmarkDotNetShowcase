@@ -89,6 +89,22 @@ dotnet run -c Release -f net10.0 -- --filter "*NativeMemoryBenchmarks*" "*Hardwa
 | 05_Diagnosers | `EtwProfilerBenchmarks` | `[EtwProfiler]` → `*.etl` для PerfView / WPA (**адміністратор**) |
 | 05_Diagnosers | `InliningDiagnoserBenchmarks` | `[InliningDiagnoser]`: рішення JIT про інлайнінг (**адміністратор**) |
 | 05_Diagnosers | `TailCallDiagnoserBenchmarks` | `[TailCallDiagnoser]`: хвостові виклики x64 JIT (**адміністратор**) |
+| Config | `CustomColumnsBenchmarks` + `CustomColumnsConfig` | власний `ManualConfig`, `[Config(typeof(...))]`, `StatisticColumn` (Median, P95, Min, Max), власний `IColumn` |
+| Config | `FluentConfigBenchmarks` | fluent-API: `DefaultConfig.Instance.AddJob(...)...WithOptions(ConfigOptions...)` |
+| Config | `JobAttributesBenchmarks` | `[DryJob]`, `[ShortRunJob]` |
+| Config | `InProcessBenchmarks` | `[InProcess]` — без окремого процесу |
+| Config | `ExportersBenchmarks` | Markdown (GitHub), HTML, CSV, JSON, XML, AsciiDoc, `[RPlotExporter]` |
+| Config | `CustomLoggerBenchmarks` | власний `ILogger` (файл з часовими мітками) |
+| Config | `ValidatorsBenchmarks` | `ExecutionValidator`, `ReturnValueValidator`, `JitOptimizationsValidator` |
+| Config | `OutliersBenchmarks` | `OutlierMode.RemoveUpper` vs `DontRemove` |
+| Config | `StatisticalTestBenchmarks` | `[StatisticalTestColumn("5%")]` (Mann–Whitney) |
+| 06_Setup | `FileSerializationSetupBenchmarks` | `[GlobalSetup]` / `[GlobalCleanup]`: тимчасовий файл, серіалізація |
+| 06_Setup | `IterationSetupBenchmarks` | `[IterationSetup]` / `[IterationCleanup]` з `Target`, `[InvocationCount(1)]` |
+| 06_Setup | `TargetedSetupBenchmarks` | `[GlobalSetup(Targets = [...])]` — окремий setup для окремих методів |
+| 06_Setup | `ConstructorVsGlobalSetupBenchmarks` | конструктор виконується до присвоєння `[Params]` |
+| 07_Async | `TaskVsValueTaskBenchmarks` | `Task<T>` vs `ValueTask<T>` vs `Task` при синхронному завершенні |
+| 07_Async | `AsyncOverheadBenchmarks` | `async/await` vs пряме повернення `Task`, `ConfigureAwait(false)` |
+| 07_Async | `ParallelismBenchmarks` | `Parallel.For` vs PLINQ vs `Task.WhenAll` + `[ThreadingDiagnoser]` |
 
 ## Як читати вивід
 
@@ -450,3 +466,159 @@ Vector512.IsHardwareAccelerated = False` (AVX2 без AVX-512). Векторні
 | Method              | Mean     | Error     | StdDev    |
 |-------------------- |---------:|----------:|----------:|
 | CountPrimesThenSort | 2.255 ms | 0.1458 ms | 0.0080 ms |
+
+### Config (конфігурація, колонки, експорт)
+
+Простір імен — `Showcase.Benchmarks.Configuration`: namespace `...Config` перекрив би атрибут `[Config]` в усьому проєкті.
+`JobAttributes`, `FluentConfig` і `Outliers` мають власні job-и і запускаються без `--job short`.
+
+**CustomColumnsBenchmarks** — статистичні колонки й власна колонка «Budget 1,000 ns». Перша версія колонки
+показувала `x46,1` — форматування бралося з української культури; тепер — InvariantCulture:
+
+| Method       | Mean         | Error        | StdDev    | Median       | Min          | Max          | P95          | Budget 1,000 ns |
+|------------- |-------------:|-------------:|----------:|-------------:|-------------:|-------------:|-------------:|---------------- |
+| ShortToUpper |     20.90 ns |     5.167 ns |  0.283 ns |     20.97 ns |     20.58 ns |     21.14 ns |     21.12 ns | OK              |
+| LongToUpper  | 44,827.56 ns | 1,794.360 ns | 98.355 ns | 44,829.55 ns | 44,728.22 ns | 44,924.90 ns | 44,915.37 ns | x44.8           |
+
+**FluentConfigBenchmarks** — ShortRun + MemoryDiagnoser + Rank + сортування, зібрані fluent-API. Rank 1 в обох
+перших рядках — різниця між `ToList` і `ToArray` статистично не доведена:
+
+| Method        | Mean       | Error    | StdDev   | Rank | Gen0   | Allocated |
+|-------------- |-----------:|---------:|---------:|-----:|-------:|----------:|
+| ToListCopy    |   123.8 ns | 104.8 ns |  5.74 ns |    1 | 0.2422 |   3.96 KB |
+| ToArrayCopy   |   134.0 ns | 245.4 ns | 13.45 ns |    1 | 0.2404 |   3.93 KB |
+| ToHashSetCopy | 5,233.3 ns | 731.6 ns | 40.10 ns |    2 | 1.0605 |  17.35 KB |
+
+**JobAttributesBenchmarks** — `[DryJob]` показує один холодний виклик (з JIT) — у 160 разів більше за ShortRun:
+
+| Method           | Job      | IterationCount | RunStrategy | UnrollFactor | WarmupCount | Mean       | Error    | StdDev    |
+|----------------- |--------- |--------------- |------------ |------------- |------------ |-----------:|---------:|----------:|
+| SumOfSquareRoots | Dry      | 1              | ColdStart   | 1            | 1           | 754.800 us |       NA | 0.0000 us |
+| SumOfSquareRoots | ShortRun | 3              | Default     | 16           | 3           |   4.753 us | 1.004 us | 0.0550 us |
+
+**InProcessBenchmarks** — з `--job short` атрибут `[InProcess]` додає власний job, тож рядків два; результати збігаються:
+
+| Method       | Job       | Toolchain              | IterationCount | LaunchCount | WarmupCount | Mean     | Error     | StdDev  |
+|------------- |---------- |----------------------- |--------------- |------------ |------------ |---------:|----------:|--------:|
+| ArrayIndexOf | InProcess | InProcessEmitToolchain | Default        | Default     | Default     | 476.0 ns |   5.25 ns | 4.91 ns |
+| ArrayIndexOf | ShortRun  | Default                | 3              | 1           | 3           | 478.1 ns | 122.23 ns | 6.70 ns |
+
+**ExportersBenchmarks** — у `BenchmarkDotNet.Artifacts/results` з'явилися `-report-github.md`, `-report.html`, `-report.csv`,
+`-measurements.csv`, `-report-full.json`, `-report-brief.xml`, `-report.asciidoc`. R не встановлено, тому RPlot лише попередив:
+`RPlotExporter couldn't find Rscript.exe in your PATH and no R_HOME environment variable is defined`.
+
+| Method               | Mean      | Error    | StdDev   | Ratio | RatioSD |
+|--------------------- |----------:|---------:|---------:|------:|--------:|
+| SortOrdinal          |  78.27 ns | 33.37 ns | 1.829 ns |  1.00 |    0.03 |
+| SortInvariantCulture | 217.35 ns | 30.66 ns | 1.680 ns |  2.78 |    0.06 |
+
+**CustomLoggerBenchmarks** — логер пише `BenchmarkDotNet.Artifacts/elapsed-time.log`; логери діють на весь запуск, тому
+у файл потрапив вивід усіх 13 бенчмарків групи. Фрагмент:
+
+```
+[+00:00.000] // Validating benchmarks:
+[+00:00.539] // ***** BenchmarkRunner: Start   *****
+[+00:00.539] // ***** Found 13 benchmark(s) in total *****
+[+00:19.820] WorkloadActual   1: 33554432 op, 813281600.00 ns, 24.2377 ns/op
+```
+
+Перша версія логера відкривала файл у конструкторі й ламала **інші** запуски: `BenchmarkSwitcher` створює конфігурації
+всіх класів під час пошуку бенчмарків, навіть відфільтрованих. Тепер файл відкривається при першому записі.
+
+**ValidatorsBenchmarks** — усі три реалізації повертають 4950, тож `ReturnValueValidator` пропускає запуск.
+`SumWithFormula` — `ZeroMeasurement` (кілька інструкцій):
+
+| Method         | Mean       | Error     | StdDev    | Ratio |
+|--------------- |-----------:|----------:|----------:|------:|
+| SumWithLoop    | 31.7480 ns | 4.3353 ns | 0.2376 ns | 1.000 |
+| SumWithLinq    |  7.1575 ns | 2.0832 ns | 0.1142 ns | 0.225 |
+| SumWithFormula |  0.0123 ns | 0.1867 ns | 0.0102 ns | 0.000 |
+
+**OutliersBenchmarks** — метод іноді «зависає» на ~600 µs. `DontRemove` враховує все (Mean 17 µs, StdDev 79 µs),
+`RemoveUpper` відкидає 8 викидів (Mean 4.3 µs, StdDev 0.35 µs). Медіани однакові — вона стійка до викидів:
+
+| Method                  | Job         | OutlierMode | Mean      | Error      | StdDev     | Median   |
+|------------------------ |------------ |------------ |----------:|-----------:|-----------:|---------:|
+| WorkWithOccasionalSpike | DontRemove  | DontRemove  | 17.275 us | 35.4185 us | 79.2185 us | 4.375 us |
+| WorkWithOccasionalSpike | RemoveUpper | RemoveUpper |  4.298 us |  0.1688 us |  0.3487 us | 4.431 us |
+
+```
+Outliers
+  OutliersBenchmarks.WorkWithOccasionalSpike: RemoveUpper -> 8 outliers were removed, 18 outliers were detected (3.54 us..3.82 us, 4.74 us..633.47 us)
+```
+
+**StatisticalTestBenchmarks** — тест Манна–Вітні з порогом 5%. Несподіванка: `Aggregate` з делегатом — **Same**
+(Dynamic PGO девіртуалізує делегат), а векторизований `Sum` — **Faster**:
+
+| Method        | Mean      | Error     | StdDev   | Ratio | MannWhitney(5%) |
+|-------------- |----------:|----------:|---------:|------:|---------------- |
+| ForLoop       | 260.17 ns | 12.125 ns | 0.665 ns |  1.00 | Baseline        |
+| ForeachLoop   | 260.56 ns | 31.395 ns | 1.721 ns |  1.00 | Same            |
+| LinqAggregate | 258.05 ns | 28.867 ns | 1.582 ns |  0.99 | Same            |
+| LinqSum       |  68.41 ns |  5.912 ns | 0.324 ns |  0.26 | Faster          |
+
+### 06_Setup
+
+**ConstructorVsGlobalSetupBenchmarks** — у лозі видно порядок викликів: `// Constructor: Size = 0`, потім
+`// GlobalSetup: Size = 1000`. Масив з конструктора порожній — звідси `ZeroMeasurement`:
+
+| Method                 | Size   | Mean           | Error         | StdDev     |
+|----------------------- |------- |---------------:|--------------:|-----------:|
+| SumDataFromConstructor | 1000   |      0.2278 ns |     0.1878 ns |  0.0103 ns |
+| SumDataFromGlobalSetup | 1000   |    233.5918 ns |     4.2789 ns |  0.2345 ns |
+| SumDataFromConstructor | 100000 |      0.2443 ns |     0.2637 ns |  0.0145 ns |
+| SumDataFromGlobalSetup | 100000 | 22,883.9915 ns | 1,475.6029 ns | 80.8828 ns |
+
+**FileSerializationSetupBenchmarks** — файл створюється в `[GlobalSetup]` і видаляється в `[GlobalCleanup]`;
+читання з `FileStream` додає 70%:
+
+| Method               | Mean     | Error     | StdDev   | Ratio | RatioSD | Gen0    | Gen1    | Allocated | Alloc Ratio |
+|--------------------- |---------:|----------:|---------:|------:|--------:|--------:|--------:|----------:|------------:|
+| DeserializeFromBytes | 431.2 us |  34.71 us |  1.90 us |  1.00 |    0.01 | 25.8789 | 11.7188 | 422.84 KB |        1.00 |
+| DeserializeFromFile  | 730.7 us | 185.54 us | 10.17 us |  1.69 |    0.02 | 25.3906 | 10.7422 | 423.08 KB |        1.00 |
+
+**IterationSetupBenchmarks** — сортування 2 млн елементів на місці. З 1 млн ітерація тривала ~50 мс і BenchmarkDotNet
+попереджав `MinIterationTime`; з 2 млн (~105 мс) попередження зникло. Час однаковий, різниця — в Allocated:
+
+| Method                 | Mean     | Error    | StdDev  | Ratio | RatioSD | Allocated | Alloc Ratio |
+|----------------------- |---------:|---------:|--------:|------:|--------:|----------:|------------:|
+| SortWithIterationSetup | 105.2 ms | 39.59 ms | 2.17 ms |  1.00 |    0.03 |         - |          NA |
+| CloneInsideMethod      | 107.4 ms | 51.94 ms | 2.85 ms |  1.02 |    0.03 | 8000024 B |          NA |
+
+**TargetedSetupBenchmarks** — у лозі перед `DictionaryLookup` і `FrozenDictionaryLookup` виконується лише
+`SetupHashBased`, а перед `SortedDictionaryLookup` — лише `SetupSorted`:
+
+| Method                 | Mean       | Error      | StdDev    | Ratio | RatioSD |
+|----------------------- |-----------:|-----------:|----------:|------:|--------:|
+| DictionaryLookup       |   4.998 us |  0.8970 us | 0.0492 us |  1.00 |    0.01 |
+| FrozenDictionaryLookup |   5.308 us |  0.5759 us | 0.0316 us |  1.06 |    0.01 |
+| SortedDictionaryLookup | 224.279 us | 34.3414 us | 1.8824 us | 44.88 |    0.50 |
+
+### 07_Async
+
+**TaskVsValueTaskBenchmarks** — `Task<int>` з довільним результатом алокує 72 B на виклик; `ValueTask<int>` і `Task` — 0 B:
+
+| Method            | Mean      | Error      | StdDev    | Ratio | RatioSD | Gen0   | Allocated | Alloc Ratio |
+|------------------ |----------:|-----------:|----------:|------:|--------:|-------:|----------:|------------:|
+| TaskOfT           | 11.371 ns | 15.7601 ns | 0.8639 ns |  1.00 |    0.09 | 0.0043 |      72 B |        1.00 |
+| ValueTaskOfT      |  7.886 ns |  2.1672 ns | 0.1188 ns |  0.70 |    0.04 |      - |         - |        0.00 |
+| TaskWithoutResult |  7.255 ns |  0.9548 ns | 0.0523 ns |  0.64 |    0.04 |      - |         - |        0.00 |
+
+**AsyncOverheadBenchmarks** — пряме повернення `Task` економить половину алокацій (немає state machine обгортки);
+`ConfigureAwait(false)` без SynchronizationContext нічого не дає:
+
+| Method                        | Mean     | Error    | StdDev  | Ratio | Gen0   | Allocated | Alloc Ratio |
+|------------------------------ |---------:|---------:|--------:|------:|-------:|----------:|------------:|
+| AsyncAwaitWrapper             | 606.3 ns | 95.87 ns | 5.26 ns |  1.00 | 0.0105 |     191 B |        1.00 |
+| DirectTaskReturn              | 582.9 ns | 44.35 ns | 2.43 ns |  0.96 | 0.0057 |      96 B |        0.50 |
+| AsyncAwaitConfigureAwaitFalse | 596.6 ns | 98.61 ns | 5.41 ns |  0.98 | 0.0114 |     199 B |        1.04 |
+
+**ParallelismBenchmarks** — 6 ядер / 12 потоків: усі паралельні варіанти в 4.4–5.6 раза швидші. `Task.WhenAll` — рівно
+64 Completed Work Items (64 шматки), `Parallel.For` і PLINQ — ~11–12 (планувальник групує роботу):
+
+| Method      | Mean      | Error     | StdDev    | Ratio | Completed Work Items | Lock Contentions | Allocated | Alloc Ratio |
+|------------ |----------:|----------:|----------:|------:|---------------------:|-----------------:|----------:|------------:|
+| Sequential  | 10.072 ms | 1.7663 ms | 0.0968 ms |  1.00 |                    - |                - |         - |          NA |
+| ParallelFor |  2.269 ms | 0.1338 ms | 0.0073 ms |  0.23 |              11.9609 |           0.0039 |    4106 B |          NA |
+| Plinq       |  1.964 ms | 0.0557 ms | 0.0031 ms |  0.20 |              11.0000 |                - |    7220 B |          NA |
+| TaskWhenAll |  1.797 ms | 0.0561 ms | 0.0031 ms |  0.18 |              64.0000 |           0.0117 |   12536 B |          NA |
